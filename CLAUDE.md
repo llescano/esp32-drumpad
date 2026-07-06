@@ -125,7 +125,7 @@ reset          Factory defaults
 |--------|------|-----|
 | Piezo 1 | 4 | ADC1_CH4 |
 | Piezo 2 | 5 | ADC1_CH5 |
-| LED | 48 | — |
+| LED | 21 | — |
 | Encoder A | 1 | — |
 | Encoder B | 2 | — |
 | Encoder Btn | 3 | — |
