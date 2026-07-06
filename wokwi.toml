@@ -1,0 +1,8 @@
+# Wokwi configuration for ESP32-S3 E-Drum Pad
+# Online: https://wokwi.com/projects/new/esp32s3
+# VS Code: install Wokwi extension, then F1 -> Wokwi: Start Simulator
+
+[wokwi]
+version = 1
+firmware = "build/esp32-edrumulus.bin"
+chip = "esp32s3"
