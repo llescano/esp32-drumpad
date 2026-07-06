@@ -195,23 +195,16 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Detection subsystem initialized successfully");
 
-    // Initialize piezo sensor on channel 0 (GPIO4)
-    ESP_LOGI(TAG, "Initializing piezo sensor...");
-    ret = edrumulus_detection_init_piezo(0, 150);  // Channel 0, threshold 150
+    // Start DSP task on Core 1 (replaces polling piezo monitor)
+    // The DSP task consumes samples from ADC ring buffer (DMA on Core 0)
+    // and runs the detection pipeline: filter → rebound detection → velocity
+    ESP_LOGI(TAG, "Starting DSP task on Core %d...", EDRUMULUS_DSP_TASK_CORE);
+    ret = edrumulus_detection_start_dsp(detection_queue);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize piezo sensor: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to start DSP task: %s", esp_err_to_name(ret));
         return;
     }
-    ESP_LOGI(TAG, "Piezo sensor initialized successfully");
-
-    // Start piezo monitoring
-    ESP_LOGI(TAG, "Starting piezo monitoring...");
-    ret = edrumulus_detection_start_piezo_monitor(0, detection_queue);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start piezo monitoring: %s", esp_err_to_name(ret));
-        return;
-    }
-    ESP_LOGI(TAG, "Piezo monitoring started successfully");
+    ESP_LOGI(TAG, "DSP task started on Core %d (ADC DMA on Core 0)", EDRUMULUS_DSP_TASK_CORE);
 
     // Start core system
     ESP_LOGI(TAG, "Starting core system...");
@@ -239,8 +232,9 @@ void app_main(void)
     static char console_buffer[256];
     static int console_pos = 0;
     
-    // Main application loop
-    uint32_t loop_count = 0;
+    // Main application loop — event-driven, no fixed delay
+    ESP_LOGI(TAG, "Main loop: event-driven (Core 0=ADC DMA, Core 1=DSP)");
+    
     while (1) {
         // Check for console input (non-blocking)
         int c = getchar();
@@ -263,91 +257,11 @@ void app_main(void)
                 printf("%c", c);
             }
         }
-        // Check for input events (non-blocking)
-        edrumulus_input_event_t input_event;
-        if (edrumulus_input_get_event(&input_event, 0) == ESP_OK) {
-            switch (input_event.type) {
-                case EDRUMULUS_INPUT_BOOT_PRESS:
-                    // PRIORITY 1: Send MIDI immediately
-                    edrumulus_midi_send_note_on(9, MIDI_NOTE_KICK_DRUM, 100);
-                    
-                    // PRIORITY 2: Visual feedback
-                    edrumulus_led_set_status(EDRUMULUS_LED_BLUE);
-                    
-                    // PRIORITY 3: Debug info (minimal)
-                    ESP_LOGI(TAG, "Boot button: MIDI kick drum");
-                    
-                    // Schedule note off with reduced delay
-                    vTaskDelay(pdMS_TO_TICKS(80));
-                    edrumulus_midi_send_note_off(9, MIDI_NOTE_KICK_DRUM);
-                    
-                    // Return LED to normal state
-                    edrumulus_led_set_status(EDRUMULUS_LED_GREEN);
-                    break;
-                    
-                case EDRUMULUS_INPUT_ENCODER_CW:
-                    // PRIORITY 1: Send MIDI immediately
-                    edrumulus_midi_send_note_on(9, MIDI_NOTE_HIHAT_CLOSED, 80);
-                    
-                    // PRIORITY 2: Visual feedback
-                    edrumulus_led_set_status(EDRUMULUS_LED_YELLOW);
-                    
-                    // PRIORITY 3: Debug info (minimal)
-                    ESP_LOGI(TAG, "Encoder CW: MIDI hi-hat closed");
-                    
-                    // Reduced delay for better responsiveness
-                    vTaskDelay(pdMS_TO_TICKS(40));
-                    edrumulus_midi_send_note_off(9, MIDI_NOTE_HIHAT_CLOSED);
-                    
-                    // Return LED to normal state
-                    edrumulus_led_set_status(EDRUMULUS_LED_GREEN);
-                    break;
-                    
-                case EDRUMULUS_INPUT_ENCODER_CCW:
-                    // PRIORITY 1: Send MIDI immediately
-                    edrumulus_midi_send_note_on(9, MIDI_NOTE_HIHAT_OPEN, 80);
-                    
-                    // PRIORITY 2: Visual feedback
-                    edrumulus_led_set_status(EDRUMULUS_LED_YELLOW);
-                    
-                    // PRIORITY 3: Debug info (minimal)
-                    ESP_LOGI(TAG, "Encoder CCW: MIDI hi-hat open");
-                    
-                    // Reduced delay for better responsiveness
-                    vTaskDelay(pdMS_TO_TICKS(40));
-                    edrumulus_midi_send_note_off(9, MIDI_NOTE_HIHAT_OPEN);
-                    
-                    // Return LED to normal state
-                    edrumulus_led_set_status(EDRUMULUS_LED_GREEN);
-                    break;
-                    
-                case EDRUMULUS_INPUT_ENCODER_PRESS:
-                    // PRIORITY 1: Send MIDI immediately
-                    edrumulus_midi_send_note_on(9, MIDI_NOTE_CRASH_CYMBAL, 120);
-                    
-                    // PRIORITY 2: Visual feedback
-                    edrumulus_led_set_status(EDRUMULUS_LED_PURPLE);
-                    
-                    // PRIORITY 3: Debug info (minimal)
-                    ESP_LOGI(TAG, "Encoder press: MIDI crash cymbal");
-                    
-                    // Reduced delay for better responsiveness (crash sustains longer)
-                    vTaskDelay(pdMS_TO_TICKS(150));
-                    edrumulus_midi_send_note_off(9, MIDI_NOTE_CRASH_CYMBAL);
-                    
-                    // Return LED to normal state
-                    edrumulus_led_set_status(EDRUMULUS_LED_GREEN);
-                    break;
-                    
-                default:
-                    ESP_LOGW(TAG, "Unknown input event type: %d", input_event.type);
-                    break;
-            }
-        }
         
-        // Check for piezo detection events (non-blocking)
+        // Wait for events from any source with 50ms timeout
+        // This is the ONLY blocking call in the main loop
         edrumulus_hit_event_t hit_event;
-        if (xQueueReceive(detection_queue, &hit_event, 0) == pdTRUE) {
+        if (xQueueReceive(detection_queue, &hit_event, pdMS_TO_TICKS(50)) == pdTRUE) {
             // PRIORITY 1: Send MIDI immediately for minimum latency
             edrumulus_midi_send_note_on(9, hit_event.note, hit_event.velocity);
             
@@ -358,33 +272,56 @@ void app_main(void)
             ESP_LOGI(TAG, "Piezo hit: Ch=%d, Note=%d, Vel=%d", 
                      hit_event.channel, hit_event.note, hit_event.velocity);
             
-            // Schedule note off with minimal delay for better responsiveness
+            // Schedule note off
             vTaskDelay(pdMS_TO_TICKS(30));
             edrumulus_midi_send_note_off(9, hit_event.note);
             
             // Return LED to normal state
             edrumulus_led_set_status(EDRUMULUS_LED_GREEN);
-            
-            // *** ELIMINADO: delay de 500ms ***
-            // El sistema de mask time inteligente en edrumulus_detection.c
-            // ahora maneja la prevención de retriggering con latencia <3ms
-            // en lugar del delay fijo de 500ms anterior
         }
         
-        // System monitoring and status updates (commented out to reduce terminal spam)
-        // if (loop_count % 50 == 0) {  // Every 5 seconds
-        //     uint32_t sent_events, queue_depth;
-        //     edrumulus_midi_get_stats(&sent_events, &queue_depth);
-        //     
-        //     ESP_LOGI(TAG, "Status - Events sent: %lu, Queue depth: %lu, USB: %s",
-        //              sent_events, queue_depth,
-        //              edrumulus_midi_is_connected() ? "Connected" : "Disconnected");
-        // }
-
-        // Test MIDI note removed - only send MIDI on real piezo hits
-
-        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms loop for responsive input
-        loop_count++;
+        // Check for input events (non-blocking, only when no hit event pending)
+        edrumulus_input_event_t input_event;
+        if (edrumulus_input_get_event(&input_event, 0) == ESP_OK) {
+            uint8_t midi_note = 0;
+            uint8_t midi_vel = 80;
+            uint32_t note_off_delay = 40;
+            
+            switch (input_event.type) {
+                case EDRUMULUS_INPUT_BOOT_PRESS:
+                    midi_note = MIDI_NOTE_KICK_DRUM;
+                    midi_vel = 100;
+                    note_off_delay = 80;
+                    edrumulus_led_set_status(EDRUMULUS_LED_BLUE);
+                    break;
+                case EDRUMULUS_INPUT_ENCODER_CW:
+                    midi_note = MIDI_NOTE_HIHAT_CLOSED;
+                    edrumulus_led_set_status(EDRUMULUS_LED_YELLOW);
+                    break;
+                case EDRUMULUS_INPUT_ENCODER_CCW:
+                    midi_note = MIDI_NOTE_HIHAT_OPEN;
+                    edrumulus_led_set_status(EDRUMULUS_LED_YELLOW);
+                    break;
+                case EDRUMULUS_INPUT_ENCODER_PRESS:
+                    midi_note = MIDI_NOTE_CRASH_CYMBAL;
+                    midi_vel = 120;
+                    note_off_delay = 150;
+                    edrumulus_led_set_status(EDRUMULUS_LED_PURPLE);
+                    break;
+                default:
+                    ESP_LOGW(TAG, "Unknown input event type: %d", input_event.type);
+                    break;
+            }
+            
+            if (midi_note > 0) {
+                edrumulus_midi_send_note_on(9, midi_note, midi_vel);
+                ESP_LOGI(TAG, "Input event: note=%d, vel=%d", midi_note, midi_vel);
+                
+                vTaskDelay(pdMS_TO_TICKS(note_off_delay));
+                edrumulus_midi_send_note_off(9, midi_note);
+                edrumulus_led_set_status(EDRUMULUS_LED_GREEN);
+            }
+        }
     }
 }
 

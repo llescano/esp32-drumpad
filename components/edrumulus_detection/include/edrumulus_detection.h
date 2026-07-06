@@ -48,6 +48,11 @@ typedef struct {
     bool initialized;           ///< Buffer ready
 } edrumulus_adc_ringbuf_t;
 
+// DSP task configuration
+#define EDRUMULUS_DSP_TASK_PRIORITY     5       ///< High priority for DSP
+#define EDRUMULUS_DSP_TASK_STACK_SIZE   4096    ///< Stack size for DSP task
+#define EDRUMULUS_DSP_TASK_CORE         1       ///< Pin DSP to Core 1
+
 /**
  * @brief Detection configuration structure
  */
@@ -203,6 +208,26 @@ esp_err_t edrumulus_detection_start(void);
  * @return esp_err_t ESP_OK on success, error code otherwise
  */
 esp_err_t edrumulus_detection_stop(void);
+
+/**
+ * @brief Start DSP task on Core 1 (replaces polling piezo monitor)
+ * 
+ * Creates a dedicated task pinned to Core 1 that continuously consumes
+ * samples from the ADC ring buffer (filled by DMA on Core 0) and runs
+ * the full detection pipeline: bandpass filter → rebound detection →
+ * velocity calculation → hit event queue.
+ * 
+ * @param detection_queue Queue to send edrumulus_hit_event_t when hits detected
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_start_dsp(QueueHandle_t detection_queue);
+
+/**
+ * @brief Stop DSP task
+ * 
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_stop_dsp(void);
 
 /**
  * @brief Deinitialize detection subsystem
