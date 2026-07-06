@@ -3,41 +3,11 @@
   "author": "llescano",
   "editor": "wokwi",
   "parts": [
-    {
-      "type": "wokwi-esp32s3-devkit-v1",
-      "id": "esp",
-      "top": 0,
-      "left": 0,
-      "rotate": 0,
-      "attrs": {
-        "env": "IDF",
-        "usb": "serial"
-      }
-    },
-    {
-      "type": "wokwi-potentiometer",
-      "id": "pot1",
-      "top": 200,
-      "left": 50,
-      "rotate": 0,
-      "attrs": { "value": "0.5" }
-    },
-    {
-      "type": "wokwi-potentiometer",
-      "id": "pot2",
-      "top": 200,
-      "left": 200,
-      "rotate": 0,
-      "attrs": { "value": "0.3" }
-    }
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": 0, "left": 0, "attrs": {} }
   ],
   "connections": [
-    ["pot1:W", "esp:GPIO4", "green", ["vctrl"]],
-    ["pot2:W", "esp:GPIO5", "blue", ["vctrl"]],
-    ["pot1:VCC", "+", "red"],
-    ["pot2:VCC", "+", "red"],
-    ["pot1:GND", "-", "black"],
-    ["pot2:GND", "-", "black"]
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ]
   ],
   "dependencies": {}
 }
