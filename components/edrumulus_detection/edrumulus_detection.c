@@ -73,6 +73,12 @@ static edrumulus_mask_time_config_t g_mask_config = {
 static uint32_t g_last_hit_time[EDRUMULUS_MAX_ADC_CHANNELS] = {0}; // Timestamp del último hit por canal
 static bool g_mask_active[EDRUMULUS_MAX_ADC_CHANNELS] = {false};    // Estado de máscara por canal
 
+// DSP task state (pinned to Core 1)
+static TaskHandle_t g_dsp_task_handle = NULL;
+static QueueHandle_t g_dsp_detection_queue = NULL;  ///< Queue to send hit events to main
+static volatile bool g_dsp_task_running = false;
+static uint32_t g_samples_processed_total = 0;
+
 // === PHASE 1: VARIABLES GLOBALES DE VALIDACIÓN ADC ===
 static bool g_adc_validation_initialized = false;
 static edrumulus_adc_validation_t g_adc_validators[EDRUMULUS_MAX_ADC_CHANNELS];
@@ -394,6 +400,188 @@ esp_err_t edrumulus_detection_read_channel(uint8_t channel, int *value)
     
     // If ring buffer was empty, return last known value or 0
     *value = 0;
+    return ESP_OK;
+}
+
+// === DSP TASK (pinned to Core 1) ===
+// Consumes samples from ADC ring buffer (filled by DMA on Core 0) and runs
+// the full detection pipeline: normalize → bandpass filter → rebound detection
+// → velocity calculation → hit event queue.
+
+/**
+ * @brief Process a single raw ADC sample through the detection pipeline.
+ * 
+ * Returns true and fills hit_event if a valid drum hit is completed.
+ * Called by dsp_task for each sample from the ring buffer.
+ */
+static bool process_adc_sample(const edrumulus_adc_sample_t *raw, edrumulus_hit_event_t *hit_event)
+{
+    if (!raw || !hit_event) return false;
+    
+    uint8_t ch = raw->channel;
+    if (ch >= EDRUMULUS_MAX_ADC_CHANNELS) return false;
+    
+    // Check mask time (prevent retrigger)
+    if (edrumulus_detection_is_in_mask_period(ch)) {
+        return false;
+    }
+    
+    // Normalize raw ADC (0-4095) to float (0.0-1.0)
+    float normalized = (float)raw->raw_value / 4095.0f;
+    
+    // Apply bandpass filter (40-400 Hz)
+    float filtered = edrumulus_detection_filter_process(normalized);
+    
+    // Run Phase 3 rebound detection (tracks edges, decay, validates velocity)
+    // Returns true if signal valid (not a rebound) or hit is still in progress
+    // When a valid hit completes, the detector stores the velocity internally
+    bool signal_valid = edrumulus_rebound_detector_process(filtered, ch);
+    
+    if (!signal_valid) {
+        return false; // Signal rejected as rebound
+    }
+    
+    // Check if a hit just completed (falling edge detected)
+    // The rebound detector stores the peak velocity internally
+    edrumulus_rebound_detector_t *det = &g_rebound_detectors[ch];
+    
+    if (det->hit_velocity > 0 && det->total_hits_detected > 0) {
+        // Hit completed! Check if this is a new hit we haven't reported yet
+        // We use a simple trick: compare total_hits_detected with what we tracked
+        static uint32_t last_reported_hits[EDRUMULUS_MAX_ADC_CHANNELS] = {0};
+        
+        if (det->total_hits_detected > last_reported_hits[ch]) {
+            last_reported_hits[ch] = det->total_hits_detected;
+            
+            // Build hit event
+            hit_event->channel = ch;
+            hit_event->velocity = det->hit_velocity;
+            hit_event->note = 38; // MIDI_NOTE_SNARE_DRUM (default, configurable later)
+            hit_event->timestamp = raw->timestamp_us;
+            hit_event->is_rimshot = false;
+            
+            // Update mask time adaptively based on velocity
+            g_last_hit_time[ch] = xTaskGetTickCount();
+            g_mask_active[ch] = true;
+            
+            if (g_mask_config.adaptive_mask) {
+                if (det->hit_velocity <= g_mask_config.velocity_threshold_low) {
+                    g_mask_config.mask_time_ms = 2;
+                } else if (det->hit_velocity >= g_mask_config.velocity_threshold_high) {
+                    g_mask_config.mask_time_ms = 10;
+                } else {
+                    g_mask_config.mask_time_ms = 5;
+                }
+            }
+            
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * @brief DSP task entry point (pinned to Core 1).
+ * 
+ * Continuously consumes ADC samples from the ring buffer (filled by DMA
+ * on Core 0) and runs the detection pipeline. When a valid hit is detected,
+ * sends an edrumulus_hit_event_t to the main application via the detection queue.
+ */
+static void dsp_task(void *pvParameters)
+{
+    (void)pvParameters;
+    
+    ESP_LOGI(TAG, "DSP task started on Core %d", xPortGetCoreID());
+    
+    edrumulus_adc_sample_t sample;
+    edrumulus_hit_event_t hit_event;
+    
+    while (g_dsp_task_running) {
+        // Consume all available samples from ring buffer (non-blocking)
+        bool processed_any = false;
+        
+        while (edrumulus_detection_get_sample(&sample)) {
+            processed_any = true;
+            g_samples_processed_total++;
+            
+            if (process_adc_sample(&sample, &hit_event)) {
+                // Hit detected! Send to queue (non-blocking)
+                if (g_dsp_detection_queue) {
+                    BaseType_t queued = xQueueSend(g_dsp_detection_queue, &hit_event, 0);
+                    if (queued != pdTRUE) {
+                        ESP_LOGW(TAG, "DSP: detection queue full, hit dropped");
+                    }
+                }
+            }
+        }
+        
+        if (!processed_any) {
+            // No samples available — yield CPU to allow other tasks
+            taskYIELD();
+        }
+    }
+    
+    ESP_LOGI(TAG, "DSP task stopped (processed %lu samples)", g_samples_processed_total);
+    vTaskDelete(NULL);
+}
+
+esp_err_t edrumulus_detection_start_dsp(QueueHandle_t detection_queue)
+{
+    if (g_dsp_task_running) {
+        ESP_LOGW(TAG, "DSP task already running");
+        return ESP_OK;
+    }
+    
+    if (detection_queue == NULL) {
+        ESP_LOGE(TAG, "Detection queue cannot be NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    g_dsp_detection_queue = detection_queue;
+    g_dsp_task_running = true;
+    g_samples_processed_total = 0;
+    
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        dsp_task,
+        "dsp_task",
+        EDRUMULUS_DSP_TASK_STACK_SIZE,
+        NULL,
+        EDRUMULUS_DSP_TASK_PRIORITY,
+        &g_dsp_task_handle,
+        EDRUMULUS_DSP_TASK_CORE  // Core 1
+    );
+    
+    if (ret != pdPASS) {
+        g_dsp_task_running = false;
+        g_dsp_task_handle = NULL;
+        ESP_LOGE(TAG, "Failed to create DSP task on Core %d", EDRUMULUS_DSP_TASK_CORE);
+        return ESP_FAIL;
+    }
+    
+    ESP_LOGI(TAG, "DSP task created on Core %d (priority %d, stack %d)",
+             EDRUMULUS_DSP_TASK_CORE, EDRUMULUS_DSP_TASK_PRIORITY, EDRUMULUS_DSP_TASK_STACK_SIZE);
+    
+    return ESP_OK;
+}
+
+esp_err_t edrumulus_detection_stop_dsp(void)
+{
+    if (!g_dsp_task_running) {
+        return ESP_OK;
+    }
+    
+    g_dsp_task_running = false;
+    
+    // Wait for task to exit
+    if (g_dsp_task_handle) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        g_dsp_task_handle = NULL;
+    }
+    
+    g_dsp_detection_queue = NULL;
+    ESP_LOGI(TAG, "DSP task stopped");
+    
     return ESP_OK;
 }
 
@@ -2399,10 +2587,8 @@ esp_err_t edrumulus_detection_deinit(void)
 
     ESP_LOGI(TAG, "Deinitializing detection subsystem");
     
-    // Stop piezo monitoring if active
-    if (g_piezo_monitoring) {
-        edrumulus_detection_stop_piezo_monitor();
-    }
+    // Stop DSP task (Core 1)
+    edrumulus_detection_stop_dsp();
     
     // Stop and deinitialize ADC continuous with DMA
     edrumulus_detection_adc_continuous_deinit();
