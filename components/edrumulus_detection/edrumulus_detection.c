@@ -83,13 +83,15 @@ static uint32_t g_samples_processed_total = 0;
 static edrumulus_pad_config_t g_pad_configs[EDRUMULUS_MAX_PADS];
 static uint8_t g_pad_count = 0;
 
-// Per-pad state for dual-piezo tracking
+// Per-pad state for dual-piezo tracking and positional sensing
 static struct {
     uint16_t peak_piezo1;        // Peak ADC value from piezo1 during active hit
     uint16_t peak_piezo2;        // Peak ADC value from piezo2 during active hit
     uint32_t peak_piezo1_time;   // Timestamp (us) of piezo1 peak
     uint32_t peak_piezo2_time;   // Timestamp (us) of piezo2 peak
-    bool     hit_active;         // Hit detection in progres
+    bool     hit_active;         // Hit detection in progress
+    float    position_filtered;  // Low-pass filtered position (0.0-1.0)
+    bool     position_valid;     // Position estimate is valid
 } g_pad_state[EDRUMULUS_MAX_PADS];
 
 // === PHASE 1: VARIABLES GLOBALES DE VALIDACIÓN ADC ===
@@ -539,18 +541,71 @@ static bool process_adc_sample(const edrumulus_adc_sample_t *raw, edrumulus_hit_
         if (det->total_hits_detected > last_reported_hits[ch]) {
             last_reported_hits[ch] = det->total_hits_detected;
             
-            // Calculate position from dual-piezo data
-            // Placeholder: amplitude ratio (center=64, edge=0 or 127)
-            // Real TDOA will be added in Issue #5
-            uint8_t position = EDRUMULUS_POSITION_CENTER; // Default center
+            // === POSITIONAL SENSING: TDOA + Amplitude Ratio hybrid ===
+            // TDOA: time difference between piezo1 and piezo2 peaks
+            // Amplitude ratio: compares peak magnitudes of both sensors
+            
+            uint8_t position = EDRUMULUS_POSITION_CENTER;
             uint16_t p1 = g_pad_state[pad_id].peak_piezo1;
             uint16_t p2 = g_pad_state[pad_id].peak_piezo2;
-            if ((p1 + p2) > 0) {
-                // Simple amplitude ratio: 0=all piezo1, 127=all piezo2, 64=equal
-                float ratio = (float)p2 / (float)(p1 + p2);
-                position = (uint8_t)(ratio * 127.0f);
-                if (position > 127) position = 127;
+            uint32_t t1 = g_pad_state[pad_id].peak_piezo1_time;
+            uint32_t t2 = g_pad_state[pad_id].peak_piezo2_time;
+            
+            // ---- TDOA calculation ----
+            // Δt > 0: piezo1 peaked first (hit closer to piezo1)
+            // Δt < 0: piezo2 peaked first (hit closer to piezo2)
+            // Map Δt ∈ [-MAX_DELTA, +MAX_DELTA] → position ∈ [0, 127]
+            float pos_time = EDRUMULUS_POSITION_CENTER;
+            int32_t delta_t = (int32_t)(t2 - t1); // µs, can be negative
+            int32_t abs_delta = (delta_t < 0) ? -delta_t : delta_t;
+            
+            if (abs_delta >= EDRUMULUS_TDOA_MIN_DELTA_US) {
+                // Normalize Δt to ±1.0, clamped to max delay
+                float norm = (float)delta_t / (float)EDRUMULUS_TDOA_MAX_DELTA_US;
+                if (norm > 1.0f) norm = 1.0f;
+                if (norm < -1.0f) norm = -1.0f;
+                // Map [-1, +1] → [0, 127]
+                pos_time = (norm + 1.0f) * 63.5f;
+                if (pos_time < 0) pos_time = 0;
+                if (pos_time > 127) pos_time = 127;
             }
+            
+            // ---- Amplitude Ratio calculation (fallback) ----
+            float pos_amp = EDRUMULUS_POSITION_CENTER;
+            if ((p1 + p2) > 50) { // Only if signal is significant
+                float ratio = (float)p2 / (float)(p1 + p2);
+                pos_amp = ratio * 127.0f;
+                if (pos_amp > 127) pos_amp = 127;
+            }
+            
+            // ---- Hybrid: weight TDOA more when valid, fall back to amplitude ----
+            float pos_raw;
+            bool tdoa_valid = (abs_delta >= EDRUMULUS_TDOA_MIN_DELTA_US);
+            
+            if (tdoa_valid) {
+                // TDOA is valid: blend both algorithms
+                pos_raw = pos_time * EDRUMULUS_TDOA_TIME_WEIGHT +
+                          pos_amp * EDRUMULUS_TDOA_AMP_WEIGHT;
+            } else {
+                // TDOA too small (center hit): use amplitude ratio only
+                pos_raw = pos_amp;
+            }
+            
+            // ---- Low-pass filter (exponential moving average) ----
+            if (!g_pad_state[pad_id].position_valid) {
+                // First valid measurement: initialize filter
+                g_pad_state[pad_id].position_filtered = pos_raw;
+                g_pad_state[pad_id].position_valid = true;
+            } else {
+                g_pad_state[pad_id].position_filtered += 
+                    EDRUMULUS_TDOA_ALPHA * (pos_raw - g_pad_state[pad_id].position_filtered);
+            }
+            
+            position = (uint8_t)(g_pad_state[pad_id].position_filtered + 0.5f);
+            if (position > 127) position = 127;
+            
+            ESP_LOGD(TAG, "Pad %d: pos=%d (TDOA:%.0f Amp:%.0f Δt=%ld)", 
+                     pad_id, position, pos_time, pos_amp, (long)delta_t);
             
             // Build hit event with full dual-piezo data
             hit_event->channel = ch;

@@ -58,6 +58,13 @@ typedef struct {
 #define EDRUMULUS_POSITION_CENTER       64      ///< Center position (0-127)
 #define EDRUMULUS_CC_POSITION_DEFAULT   16      ///< Default MIDI CC for position
 
+// TDOA positional sensing configuration
+#define EDRUMULUS_TDOA_MAX_DELTA_US     3000    ///< Max Δt between piezo peaks (µs) for 12" pad
+#define EDRUMULUS_TDOA_MIN_DELTA_US     50      ///< Min Δt to consider position valid (µs)
+#define EDRUMULUS_TDOA_ALPHA            0.35f   ///< Low-pass filter coefficient for position
+#define EDRUMULUS_TDOA_AMP_WEIGHT       0.3f    ///< Amplitude ratio weight in hybrid calc
+#define EDRUMULUS_TDOA_TIME_WEIGHT      0.7f    ///< TDOA weight in hybrid calculation
+
 /**
  * @brief Detection configuration structure
  */
