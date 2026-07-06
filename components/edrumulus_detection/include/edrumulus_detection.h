@@ -53,6 +53,11 @@ typedef struct {
 #define EDRUMULUS_DSP_TASK_STACK_SIZE   4096    ///< Stack size for DSP task
 #define EDRUMULUS_DSP_TASK_CORE         1       ///< Pin DSP to Core 1
 
+// Pad configuration
+#define EDRUMULUS_MAX_PADS              4       ///< Max pads (each = 2 ADC channels)
+#define EDRUMULUS_POSITION_CENTER       64      ///< Center position (0-127)
+#define EDRUMULUS_CC_POSITION_DEFAULT   16      ///< Default MIDI CC for position
+
 /**
  * @brief Detection configuration structure
  */
@@ -65,13 +70,20 @@ typedef struct {
 
 /**
  * @brief Drum hit event structure
+ * 
+ * Each hit carries data from both piezos for positional sensing.
+ * position (0-127) is calculated from TDOA and/or amplitude ratio.
  */
 typedef struct {
-    uint8_t channel;                 ///< ADC channel
-    uint8_t velocity;                ///< Hit velocity (0-127)
-    uint8_t note;                    ///< MIDI note number
+    uint8_t  channel;                ///< ADC channel (0-5, primary piezo)
+    uint8_t  pad_id;                 ///< Pad ID (0-7, each pad = 2 piezos)
+    uint8_t  velocity;               ///< Hit velocity (0-127)
+    uint8_t  position;               ///< Hit position (0-127, 64=center)
+    uint8_t  note;                   ///< MIDI note number
     uint32_t timestamp;              ///< Hit timestamp
-    bool is_rimshot;                 ///< Rimshot detection
+    bool     is_rimshot;             ///< Rimshot detection
+    uint16_t piezo1_raw;             ///< Raw ADC value from piezo 1
+    uint16_t piezo2_raw;             ///< Raw ADC value from piezo 2
 } edrumulus_hit_event_t;
 
 // edrumulus_pad_config_t is defined in edrumulus_config.h
@@ -96,6 +108,36 @@ typedef struct {
  * @return esp_err_t ESP_OK on success, error code otherwise
  */
 esp_err_t edrumulus_detection_init(const edrumulus_detection_config_t *config);
+
+/**
+ * @brief Configure a pad with dual-piezo channel mapping
+ * 
+ * Associates a pad_id with two ADC channels (piezo1, piezo2) and MIDI settings.
+ * Must be called for each pad before starting detection.
+ * 
+ * @param pad_id Pad ID (0 to EDRUMULUS_MAX_PADS-1)
+ * @param config Pad configuration (channels, note, threshold, etc.)
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_configure_pad(uint8_t pad_id, const edrumulus_pad_config_t *config);
+
+/**
+ * @brief Get pad configuration
+ * 
+ * @param pad_id Pad ID (0 to EDRUMULUS_MAX_PADS-1)
+ * @param[out] config Pointer to store pad configuration
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_get_pad_config(uint8_t pad_id, edrumulus_pad_config_t *config);
+
+/**
+ * @brief Find pad_id that uses a given ADC channel
+ * 
+ * @param channel ADC channel number
+ * @param[out] pad_id Pointer to store found pad_id
+ * @return true if channel belongs to a pad, false if unassigned
+ */
+bool edrumulus_detection_channel_to_pad(uint8_t channel, uint8_t *pad_id);
 
 /**
  * @brief Read ADC channel value (one-shot, legacy compatibility)

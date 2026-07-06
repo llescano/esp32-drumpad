@@ -28,13 +28,20 @@ typedef struct {
 
 /**
  * @brief Pad configuration structure
+ * 
+ * Each pad uses 2 piezos for positional sensing:
+ * - piezo_ch_1: primary sensor (ADC channel)
+ * - piezo_ch_2: secondary sensor (ADC channel, for TDOA/amplitude ratio)
  */
 typedef struct {
     uint8_t threshold;               ///< Detection threshold
     uint8_t sensitivity;             ///< Sensitivity setting
     uint8_t midi_note;               ///< MIDI note number
     uint8_t midi_note_rim;           ///< MIDI note for rimshot
+    uint8_t midi_cc_position;        ///< MIDI CC for position (default 16)
     uint8_t curve;                   ///< Velocity curve
+    uint8_t piezo_ch_1;              ///< ADC channel for piezo 1 (primary)
+    uint8_t piezo_ch_2;              ///< ADC channel for piezo 2 (secondary)
     bool enable_rimshot;             ///< Enable rimshot detection
     bool enable_crosstalk_cancel;    ///< Enable crosstalk cancellation
 } edrumulus_pad_config_t;
