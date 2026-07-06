@@ -80,12 +80,14 @@ typedef struct {
  * 
  * Each hit carries data from both piezos for positional sensing.
  * position (0-127) is calculated from TDOA and/or amplitude ratio.
+ * cc_position is the MIDI CC number to send position on (0=disabled).
  */
 typedef struct {
     uint8_t  channel;                ///< ADC channel (0-5, primary piezo)
     uint8_t  pad_id;                 ///< Pad ID (0-7, each pad = 2 piezos)
     uint8_t  velocity;               ///< Hit velocity (0-127)
     uint8_t  position;               ///< Hit position (0-127, 64=center)
+    uint8_t  cc_position;            ///< MIDI CC for position (0=disabled)
     uint8_t  note;                   ///< MIDI note number
     uint32_t timestamp;              ///< Hit timestamp
     bool     is_rimshot;             ///< Rimshot detection
