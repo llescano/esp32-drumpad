@@ -283,16 +283,23 @@ void app_main(void)
         // Wait for events from any source with 50ms timeout
         // This is the ONLY blocking call in the main loop
         edrumulus_hit_event_t hit_event;
-        if (xQueueReceive(detection_queue, &hit_event, pdMS_TO_TICKS(50)) == pdTRUE) {
-            // PRIORITY 1: Send MIDI immediately for minimum latency
-            edrumulus_midi_send_note_on(9, hit_event.note, hit_event.velocity);
-            
-            // PRIORITY 2: Visual feedback
-            edrumulus_led_set_status(EDRUMULUS_LED_RED);
-            
-            // PRIORITY 3: Debug info (minimal)
-            ESP_LOGI(TAG, "Piezo hit: Ch=%d, Note=%d, Vel=%d", 
-                     hit_event.channel, hit_event.note, hit_event.velocity);
+	        if (xQueueReceive(detection_queue, &hit_event, pdMS_TO_TICKS(50)) == pdTRUE) {
+	            // PRIORITY 1: Send MIDI immediately for minimum latency
+	            edrumulus_midi_send_note_on(9, hit_event.note, hit_event.velocity);
+	            
+	            // PRIORITY 1b: Send position as MIDI CC (if configured)
+	            if (hit_event.cc_position > 0) {
+	                edrumulus_midi_send_cc(9, hit_event.cc_position, hit_event.position);
+	            }
+	            
+	            // PRIORITY 2: Visual feedback
+	            edrumulus_led_set_status(EDRUMULUS_LED_RED);
+	            
+	            // PRIORITY 3: Debug info (minimal)
+	            ESP_LOGI(TAG, "Piezo hit: Ch=%d, Pad=%d, Note=%d, Vel=%d, Pos=%d%s", 
+	                     hit_event.channel, hit_event.pad_id, hit_event.note, 
+	                     hit_event.velocity, hit_event.position,
+	                     hit_event.cc_position > 0 ? " +CC" : "");
             
             // Schedule note off
             vTaskDelay(pdMS_TO_TICKS(30));

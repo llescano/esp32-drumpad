@@ -615,6 +615,7 @@ static bool process_adc_sample(const edrumulus_adc_sample_t *raw, edrumulus_hit_
             hit_event->note = pad->midi_note;
             hit_event->timestamp = raw->timestamp_us;
             hit_event->is_rimshot = (det->edge_detector.rise_rate > 0.5f); // Simple rimshot
+            hit_event->cc_position = pad->midi_cc_position; // CC to send position on
             hit_event->piezo1_raw = g_pad_state[pad_id].peak_piezo1;
             hit_event->piezo2_raw = g_pad_state[pad_id].peak_piezo2;
             
