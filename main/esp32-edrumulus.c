@@ -92,7 +92,7 @@ void app_main(void)
     tinyusb_config_t const tusb_cfg = {
         .device_descriptor = &desc_device,
         .string_descriptor = string_desc_arr,
-        .string_descriptor_count = 5, // 5 string descriptors defined
+        .string_descriptor_count = 6, // 4 lang + 5 strings (including CDC)
         .external_phy = false,
 #if (TUD_OPT_HIGH_SPEED)
         .fs_configuration_descriptor = desc_fs_configuration,
