@@ -1,0 +1,80 @@
+# Edrumulus specific
+build/
+tools/flash_esp32_bin/edrumulus.ino.bin
+
+tools/artstar/
+tools/aasimonster2/
+tools/DRSKit/
+tools/CrocellKit/
+tools/edrumuluskit/
+tools/drumgizmo/
+tools/ecasound/
+tools/mod-ttymidi/
+tools/SendMIDI/
+tools/jack2/
+tools/mapex_mars/
+tools/PearlMMX/
+tools/source_samples/
+tools/arduino-esp32
+
+hardware/prototype2/edrumulus-cache.lib
+hardware/prototype2/edrumulus.sch-bak
+hardware/prototype2/fp-info-cache
+hardware/prototype2/edrumulus.kicad_pcb-bak
+
+hardware/prototype4/edrumulus-cache.lib
+hardware/prototype4/edrumulus.sch-bak
+hardware/prototype4/fp-info-cache
+hardware/prototype4/edrumulus.kicad_pcb-bak
+hardware/prototype4/edrumulus-backups/
+hardware/prototype4/prototype4-gerber/
+
+hardware/prototype5/edrumulus-backups/
+hardware/prototype5/#auto_saved_files#
+hardware/prototype5/fp-info-cache
+hardware/prototype5/edrumulus_front_panel/edrumulus_front_panel-backups/
+hardware/prototype5/edrumulus_front_panel/fp-info-cache
+hardware/prototype5/edrumulus_front_panel/output/
+hardware/prototype5/output/
+
+hardware/prototype6/edrumulus-backups/
+hardware/prototype6/#auto_saved_files#
+hardware/prototype6/fp-info-cache
+hardware/prototype6/output/
+
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+#*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# platformio
+.pio

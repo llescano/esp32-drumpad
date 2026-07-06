@@ -1,0 +1,55 @@
+# ESP-IDF build artifacts
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.defaults
+*.bin
+*.elf
+*.hex
+*.map
+*.img
+*.uf2
+
+# Managed components (IDF managed)
+managed_components/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+*.pyc
+__pycache__/
+*.egg-info/
+
+# IDE / Editor files
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ESP-IDF / Clangd
+compile_commands.json
+
+# Test artifacts
+test_*.c
+Makefile.test
+*.test
+
+# Temp / logs
+*.log
+*.tmp

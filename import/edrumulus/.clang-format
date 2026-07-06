@@ -1,0 +1,16 @@
+BasedOnStyle: Google
+TabWidth: 2
+BreakBeforeBraces: Allman
+ColumnLimit: 0
+AlignTrailingComments: true
+BinPackArguments: false
+BinPackParameters: false
+PenaltyBreakBeforeFirstCallParameter: 0
+AllowShortCaseLabelsOnASingleLine: true
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: Consecutive
+SpacesBeforeTrailingComments: 1
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowShortFunctionsOnASingleLine: All
+IndentPPDirectives: AfterHash
+AlignAfterOpenBracket: Align
