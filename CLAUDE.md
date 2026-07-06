@@ -1,193 +1,188 @@
-# CLAUDE.md
+# CLAUDE.md — ESP32 E-Drum Trigger System
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## ESP32 E-Drum Trigger System
-
-This is a high-performance electronic drum trigger system based on ESP32-S3 with native USB MIDI support, featuring ported Edrumulus detection algorithms. The system provides <10ms latency with advanced 3-phase signal processing.
-
-## Build and Development Commands
+## Build Commands
 
 ### Environment Setup (Windows PowerShell)
 ```powershell
-# Navigate to ESP-IDF directory and setup environment
-& "C:\path\to\esp-idf\export.ps1"
-
-# Navigate to project directory
+# Activate ESP-IDF environment
+& "i:\esp32\v5.5.1\esp-idf\export.ps1"
 cd I:\esp32\esp32-drumpad
 ```
 
-### Quick Build Scripts (Recommended)
+### Build & Flash
 ```powershell
-# Use provided PowerShell scripts for faster iteration:
-.\build.ps1              # Build only
-.\flash.ps1              # Flash only
-.\build-flash-monitor.ps1 # Complete build, flash & monitor
+idf.py build                    # Build firmware
+idf.py flash                    # Flash to device (COM9)
+idf.py monitor                  # Serial monitor (115200 baud, Ctrl+] to exit)
+idf.py build flash monitor      # All-in-one
+
+# Quick scripts (no export needed):
+.\build.ps1
+.\flash.ps1
+.\build-flash-monitor.ps1
+.\build_wokwi.ps1               # Build for Wokwi (PSRAM disabled)
 ```
 
-### Core Build Commands
+### Clean Build
 ```powershell
-# Set target to ESP32-S3
-idf.py set-target esp32s3
-
-# Build the project
-idf.py build
-
-# Flash to device (COM9 configured)
-idf.py flash
-
-# Monitor serial output (115200 baud)
-idf.py monitor
-
-# Clean build
 idf.py fullclean
-
-# Configuration menu
-idf.py menuconfig
 ```
 
-### Combined Commands
+## Project Architecture
+
+### Dual-Core Design
+- **Core 0**: ADC DMA ISR → ring buffer (producer)
+- **Core 1**: `dsp_task` → ring buffer → detection pipeline (consumer)
+- **Main loop**: Event-driven, receives hit events → MIDI
+
+### Component Map
+
+| Component | Files | Purpose |
+|-----------|-------|---------|
+| `edrumulus_detection` | `edrumulus_detection.c/.h` | ADC continuous, ring buffer, DSP pipeline, TDOA, rebound detection, pad registry |
+| `edrumulus_midi` | `edrumulus_midi.c/.h` | USB MIDI via TinyUSB (Note On/Off, CC) |
+| `edrumulus_core` | `edrumulus_core.c/.h` | System init, NVS, status |
+| `edrumulus_config` | `edrumulus_config.c/.h` | Pad config (dual-piezo), system config, NVS persistence |
+| `edrumulus_console` | `edrumulus_console.c/.h` | Serial command interface |
+| `edrumulus_led` | `edrumulus_led.c/.h` | WS2812 RGB LED |
+| `edrumulus_input` | `edrumulus_input.c/.h` | Rotary encoder + buttons |
+
+### Key Data Structures
+
+```c
+// Hit event with full positional data
+typedef struct {
+    uint8_t  channel;        // ADC channel (primary piezo)
+    uint8_t  pad_id;         // Pad ID
+    uint8_t  velocity;       // 0-127
+    uint8_t  position;       // 0-127 (TDOA + Amp ratio)
+    uint8_t  cc_position;    // MIDI CC for position (0=disabled)
+    uint8_t  note;           // MIDI note
+    uint32_t timestamp;      // µs
+    bool     is_rimshot;
+    uint16_t piezo1_raw;     // Peak from piezo1
+    uint16_t piezo2_raw;     // Peak from piezo2
+} edrumulus_hit_event_t;
+
+// Pad configuration (dual-piezo)
+typedef struct {
+    uint8_t threshold;
+    uint8_t sensitivity;
+    uint8_t midi_note;
+    uint8_t midi_note_rim;
+    uint8_t midi_cc_position; // MIDI CC for position
+    uint8_t curve;
+    uint8_t piezo_ch_1;       // ADC channel for piezo1
+    uint8_t piezo_ch_2;       // ADC channel for piezo2
+    bool enable_rimshot;
+    bool enable_crosstalk_cancel;
+} edrumulus_pad_config_t;
+```
+
+## Detection Pipeline (in order)
+
+1. `edrumulus_detection_get_sample()` — pop from ring buffer (non-blocking)
+2. Normalize: `raw / 4095.0f` → `[0.0, 1.0]`
+3. `edrumulus_detection_filter_process()` — 40-400Hz bandpass IIR
+4. `edrumulus_rebound_detector_process()` — edge/decay/velocity analysis
+5. TDOA: `Δt = t_peak2 - t_peak1` → position (0-127)
+6. Amplitude ratio: `p2/(p1+p2)` → position fallback
+7. Hybrid: TDOA 70% + Amp 30% (or Amp 100% when Δt < 50µs)
+8. Low-pass EMA filter on position (α = 0.35)
+9. Send `edrumulus_hit_event_t` to detection queue
+
+## Positional Sensing Algorithm
+
+```
+Δt = peak_piezo2_time - peak_piezo1_time  (µs)
+Δt ∈ [-3000µs, +3000µs] → position ∈ [0, 127]
+  Δt > 0 → hit closer to piezo1
+  Δt < 0 → hit closer to piezo2
+  Δt ≈ 0 → center (position 64)
+
+Hybrid:
+  if |Δt| >= 50µs:  pos = TDOA * 0.7 + AmpRatio * 0.3
+  if |Δt| < 50µs:   pos = AmpRatio * 1.0
+
+EMA filter: filtered += 0.35 * (raw - filtered)
+```
+
+## Console Commands
+
+```
+help           Show all commands
+show           Display configuration
+set <p> <v>    Set parameter (edge_threshold, tau_min, linearity, etc.)
+test <m>       Run module test (edge, decay, velocity, adaptive, all)
+save [name]    Save to NVS
+load [name]    Load from NVS
+reset          Factory defaults
+```
+
+## Hardware (ESP32-S3 DevKitC-1)
+
+| Signal | GPIO | ADC |
+|--------|------|-----|
+| Piezo 1 | 4 | ADC1_CH4 |
+| Piezo 2 | 5 | ADC1_CH5 |
+| LED | 48 | — |
+| Encoder A | 1 | — |
+| Encoder B | 2 | — |
+| Encoder Btn | 3 | — |
+| Boot | 0 | — |
+| USB D- | 19 | Fixed |
+| USB D+ | 20 | Fixed |
+
+### Analog Frontend (per piezo)
+- Bias: resistive divider to 1.65V (3.3V midpoint)
+- Anti-alias: RC low-pass 10kΩ + 100nF
+- Decoupling: 100nF at ADC input
+
+## Testing
+
+### Compile check
+```bash
+idf.py build    # Must pass 1117/1117 steps
+```
+
+### Wokwi simulation
 ```powershell
-# Build and flash in one command
-idf.py build flash
-
-# Build, flash and monitor
-idf.py build flash monitor
-
-# Note: Use Ctrl+] to exit monitor, not Ctrl+C
+.\build_wokwi.ps1    # Build without PSRAM
+# Upload build/esp32-edrumulus.bin to https://wokwi.com/ (ESP32-S3)
 ```
 
-## System Architecture
+### Runtime validation
+The `edrumulus_detection_adc_continuous_validate(500)` function checks:
+- Sample rate ≈ 16k samples/s (2 channels × 8kHz)
+- No ring buffer overflows
+- Both channels (CH4=piezo1, CH5=piezo2) producing data
 
-### Core Components
-- **edrumulus_core**: System initialization, task management, and coordination
-- **edrumulus_detection**: 3-phase signal processing algorithms (8kHz sampling, filtering, detection)
-- **edrumulus_midi**: Native USB MIDI interface via TinyUSB
-- **edrumulus_console**: Serial command interface for real-time parameter adjustment
-- **edrumulus_config**: Configuration management with NVS persistence
-- **edrumulus_led**: RGB LED status indication
-- **edrumulus_input**: Rotary encoder input handling
+### HITL (hardware required)
+1. Connect piezos to GPIO4 (piezo1) and GPIO5 (piezo2)
+2. Flash firmware: `idf.py flash`
+3. Monitor: `idf.py monitor`
+4. Hit pad at different positions → verify position value in log
 
-### Signal Processing Pipeline (3-Phase Detection)
-1. **Phase 1**: Basic ADC sampling (8kHz) and peak detection
-2. **Phase 2**: 40-400Hz Butterworth bandpass filtering for noise reduction
-3. **Phase 3**: Advanced detection algorithms:
-   - Edge detection with rise/fall rate analysis
-   - Exponential decay analyzer for piezo signal validation
-   - Velocity validator with minimum threshold (15)
-   - Adaptive threshold based on SNR and noise floor
-   - Mechanical rebound detector for false trigger rejection
+## Git Workflow
 
-### FreeRTOS Task Architecture
-- **Main Task**: System coordination and initialization
-- **Detection Task**: Real-time signal processing at 8kHz
-- **MIDI Task**: USB MIDI message handling
-- **Input Task**: Rotary encoder and button handling
-- **Console Task**: Serial command processing
-
-## Hardware Configuration (ESP32-S3)
-
-### Pin Assignments
-- **ADC Channels**: GPIO4-9 (6 analog inputs for piezo sensors)
-- **Rotary Encoder**: GPIO1 (A), GPIO2 (B), GPIO3 (Button)
-- **Boot Button**: GPIO0 (system functions)
-- **Status LED**: GPIO48 (WS2812 addressable RGB)
-- **USB Native**: GPIO19 (D-), GPIO20 (D+) - fixed pins for USB MIDI
-
-### ESP32-S3 Specific Settings
-- **CPU Frequency**: 240MHz for maximum performance
-- **SPIRAM**: Enabled (OCT mode, 80MHz)
-- **USB OTG**: Native USB support enabled
-- **TinyUSB**: Configured for MIDI (1 device)
-
-## Console Command System
-
-### Access
-- **Port**: COM9 (configured in sdkconfig)
-- **Baud Rate**: 115200
-- **Tools**: PuTTY, Arduino IDE Serial Monitor, or `idf.py monitor`
-
-### Key Commands
-```
-help                           # Show all commands
-show                           # Display current configuration
-set <param> <value>            # Adjust parameters dynamically
-test <module>                  # Run individual module tests
-save/load [name]               # Store/retrieve configurations from NVS
-reset                          # Restore default values
+```bash
+git checkout master
+git pull origin master
+git checkout -b issue-XX-descripcion
+# ... implement ...
+git add -A && git commit -m "feat(#XX): description"
+git push origin issue-XX-descripcion
+# Create PR via `gh pr create` or GitHub web
+# PR merged with `gh pr merge --squash --delete-branch`
 ```
 
-### Parameter Categories
-- **Edge Detector**: edge_threshold, edge_sensitivity, rise_rate
-- **Decay Analyzer**: tau_min, tau_max, r_squared
-- **Velocity Validator**: linearity, repeatability, dynamic_min/max
-- **Adaptive Threshold**: snr_target, adaptation_time, stability
+## Completed Issues (PRs)
 
-## Development Workflow
-
-### Component Management Rules
-- **CRITICAL**: Never modify `managed_components/` - these are IDF-managed
-- **Custom Components**: Only place custom code in `components/` directory
-- **TinyUSB**: Use only `managed_components/espressif__tinyusb` (official)
-
-### Debugging and Monitoring
-- Use `idf.py monitor` for real-time log viewing
-- Debug level set to DEBUG in sdkconfig.defaults
-- Console commands provide real-time parameter adjustment without recompiling
-
-### Configuration Persistence
-- Settings stored in NVS (Non-Volatile Storage)
-- Use `save` command to persist parameter changes
-- Use `load` command to retrieve stored configurations
-- Default configuration automatically loaded on startup
-
-## Build Configuration
-
-### ESP-IDF Configuration (sdkconfig.defaults)
-- Target: ESP32-S3
-- USB OTG: Enabled for native USB MIDI
-- TinyUSB: 1 MIDI device configured
-- Serial Port: COM9, 921600 baud for programming
-- CPU: 240MHz with performance optimization
-- ADC: Continuous mode, ISR safe for real-time processing
-
-### Dependencies
-- **TinyUSB**: Managed via IDF component system
-- **FreeRTOS**: Included with ESP-IDF
-- **ESP32-S3**: Specific hardware optimizations enabled
-
-## Testing and Validation
-
-### Phase 3 Testing
-Use console commands for real-time testing:
-```
-test edge       # Test edge detection algorithm
-test decay      # Test decay analyzer
-test velocity   # Test velocity validation
-test adaptive   # Test adaptive threshold
-test all        # Run complete system test
-```
-
-### Performance Monitoring
-- Latency measurement shows <10ms response time
-- CPU usage remains <80% at full load
-- Memory usage <300KB SRAM
-- Real-time oscilloscope validation completed
-
-## Important Notes
-
-### USB Port Usage
-- **Native USB Port**: Connect computer for MIDI functionality
-- **Programming Port**: Use for flashing/monitoring via USB-to-serial bridge
-- **Do not confuse** - ESP32-S3 has separate USB modes
-
-### Common Issues
-- If TinyUSB fails: Check USB OTG configuration and disable USB Serial JTAG
-- If monitor doesn't respond: Use Ctrl+] to exit, not Ctrl+C
-- If build fails: Run `idf.py fullclean` and rebuild
-- If MIDI not detected: Verify native USB connection, not programming port
-
-### Reference Documentation
-- ESP-IDF v5.4.1 documentation: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/index.html
-- TinyUSB MIDI implementation included in managed_components
-- Console commands detailed in CONSOLE_COMMANDS.md
+| # | Branch | Description | PR |
+|---|--------|-------------|----|
+| 1 | `issue-01-migrar-adc-continuous` | ADC continuous with DMA | #12 |
+| 3 | `issue-03-dual-core` | Dual-core pinning (Core 0=ADC, Core 1=DSP) | #13 |
+| 4 | `issue-04-modelo-dual-piezo` | 2-piezo pad model + position field | #14 |
+| 5 | `issue-05-tdoa` | TDOA positional sensing | #15 |
+| 8 | `issue-08-midi-cc` | MIDI CC for hit position | #16 |
+| 11 | `issue-11-docs` | Documentation update | #17 |
