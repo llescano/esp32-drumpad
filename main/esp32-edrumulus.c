@@ -205,6 +205,28 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "DSP task started on Core %d (ADC DMA on Core 0)", EDRUMULUS_DSP_TASK_CORE);
+    
+    // Configure pads with dual-piezo channel mapping
+    // Pad 0: piezo1=CH4 (GPIO4), piezo2=CH5 (GPIO5), Snare
+    edrumulus_pad_config_t pad0 = {
+        .threshold = 100,
+        .sensitivity = 50,
+        .midi_note = MIDI_NOTE_SNARE_DRUM,
+        .midi_note_rim = MIDI_NOTE_SNARE_DRUM + 1, // 39 (rimshot)
+        .midi_cc_position = EDRUMULUS_CC_POSITION_DEFAULT,
+        .curve = 0,
+        .piezo_ch_1 = 4,
+        .piezo_ch_2 = 5,
+        .enable_rimshot = true,
+        .enable_crosstalk_cancel = false
+    };
+    ret = edrumulus_detection_configure_pad(0, &pad0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure pad 0: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Pad 0 configured: piezo1=GPIO4, piezo2=GPIO5, note=%d",
+                 pad0.midi_note);
+    }
 
     // Start core system
     ESP_LOGI(TAG, "Starting core system...");

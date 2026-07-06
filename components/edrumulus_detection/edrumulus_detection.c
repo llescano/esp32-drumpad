@@ -79,6 +79,19 @@ static QueueHandle_t g_dsp_detection_queue = NULL;  ///< Queue to send hit event
 static volatile bool g_dsp_task_running = false;
 static uint32_t g_samples_processed_total = 0;
 
+// Pad registry (each pad = 2 ADC channels)
+static edrumulus_pad_config_t g_pad_configs[EDRUMULUS_MAX_PADS];
+static uint8_t g_pad_count = 0;
+
+// Per-pad state for dual-piezo tracking
+static struct {
+    uint16_t peak_piezo1;        // Peak ADC value from piezo1 during active hit
+    uint16_t peak_piezo2;        // Peak ADC value from piezo2 during active hit
+    uint32_t peak_piezo1_time;   // Timestamp (us) of piezo1 peak
+    uint32_t peak_piezo2_time;   // Timestamp (us) of piezo2 peak
+    bool     hit_active;         // Hit detection in progres
+} g_pad_state[EDRUMULUS_MAX_PADS];
+
 // === PHASE 1: VARIABLES GLOBALES DE VALIDACIÓN ADC ===
 static bool g_adc_validation_initialized = false;
 static edrumulus_adc_validation_t g_adc_validators[EDRUMULUS_MAX_ADC_CHANNELS];
@@ -403,6 +416,61 @@ esp_err_t edrumulus_detection_read_channel(uint8_t channel, int *value)
     return ESP_OK;
 }
 
+// === PAD REGISTRY (dual-piezo per pad) ===
+
+esp_err_t edrumulus_detection_configure_pad(uint8_t pad_id, const edrumulus_pad_config_t *config)
+{
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (pad_id >= EDRUMULUS_MAX_PADS) {
+        ESP_LOGE(TAG, "Invalid pad_id: %d (max %d)", pad_id, EDRUMULUS_MAX_PADS - 1);
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    g_pad_configs[pad_id] = *config;
+    
+    // Track highest pad_id configured
+    if (pad_id + 1 > g_pad_count) {
+        g_pad_count = pad_id + 1;
+    }
+    
+    // Reset per-pad state
+    memset(&g_pad_state[pad_id], 0, sizeof(g_pad_state[pad_id]));
+    
+    ESP_LOGI(TAG, "Pad %d configured: ch%d+ch%d, note=%d, thresh=%d",
+             pad_id, config->piezo_ch_1, config->piezo_ch_2,
+             config->midi_note, config->threshold);
+    
+    return ESP_OK;
+}
+
+esp_err_t edrumulus_detection_get_pad_config(uint8_t pad_id, edrumulus_pad_config_t *config)
+{
+    if (config == NULL) return ESP_ERR_INVALID_ARG;
+    if (pad_id >= EDRUMULUS_MAX_PADS) return ESP_ERR_INVALID_ARG;
+    if (g_pad_configs[pad_id].piezo_ch_1 == 0 && g_pad_configs[pad_id].piezo_ch_2 == 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    *config = g_pad_configs[pad_id];
+    return ESP_OK;
+}
+
+bool edrumulus_detection_channel_to_pad(uint8_t channel, uint8_t *pad_id)
+{
+    if (!pad_id) return false;
+    
+    for (int i = 0; i < EDRUMULUS_MAX_PADS; i++) {
+        if (i >= g_pad_count) break;
+        if (g_pad_configs[i].piezo_ch_1 == channel || 
+            g_pad_configs[i].piezo_ch_2 == channel) {
+            *pad_id = i;
+            return true;
+        }
+    }
+    return false;
+}
+
 // === DSP TASK (pinned to Core 1) ===
 // Consumes samples from ADC ring buffer (filled by DMA on Core 0) and runs
 // the full detection pipeline: normalize → bandpass filter → rebound detection
@@ -412,7 +480,7 @@ esp_err_t edrumulus_detection_read_channel(uint8_t channel, int *value)
  * @brief Process a single raw ADC sample through the detection pipeline.
  * 
  * Returns true and fills hit_event if a valid drum hit is completed.
- * Called by dsp_task for each sample from the ring buffer.
+ * Tracks dual-piezo peaks for positional sensing.
  */
 static bool process_adc_sample(const edrumulus_adc_sample_t *raw, edrumulus_hit_event_t *hit_event)
 {
@@ -420,6 +488,15 @@ static bool process_adc_sample(const edrumulus_adc_sample_t *raw, edrumulus_hit_
     
     uint8_t ch = raw->channel;
     if (ch >= EDRUMULUS_MAX_ADC_CHANNELS) return false;
+    
+    // Find which pad this channel belongs to
+    uint8_t pad_id = 0;
+    bool found_pad = edrumulus_detection_channel_to_pad(ch, &pad_id);
+    if (!found_pad) {
+        return false; // Channel not assigned to any pad
+    }
+    
+    edrumulus_pad_config_t *pad = &g_pad_configs[pad_id];
     
     // Check mask time (prevent retrigger)
     if (edrumulus_detection_is_in_mask_period(ch)) {
@@ -433,32 +510,61 @@ static bool process_adc_sample(const edrumulus_adc_sample_t *raw, edrumulus_hit_
     float filtered = edrumulus_detection_filter_process(normalized);
     
     // Run Phase 3 rebound detection (tracks edges, decay, validates velocity)
-    // Returns true if signal valid (not a rebound) or hit is still in progress
-    // When a valid hit completes, the detector stores the velocity internally
     bool signal_valid = edrumulus_rebound_detector_process(filtered, ch);
     
     if (!signal_valid) {
         return false; // Signal rejected as rebound
     }
     
-    // Check if a hit just completed (falling edge detected)
-    // The rebound detector stores the peak velocity internally
+    // Track per-pad dual-piezo peaks for positional sensing
+    if (ch == pad->piezo_ch_1) {
+        if (raw->raw_value > g_pad_state[pad_id].peak_piezo1) {
+            g_pad_state[pad_id].peak_piezo1 = raw->raw_value;
+            g_pad_state[pad_id].peak_piezo1_time = raw->timestamp_us;
+        }
+    }
+    if (ch == pad->piezo_ch_2) {
+        if (raw->raw_value > g_pad_state[pad_id].peak_piezo2) {
+            g_pad_state[pad_id].peak_piezo2 = raw->raw_value;
+            g_pad_state[pad_id].peak_piezo2_time = raw->timestamp_us;
+        }
+    }
+    
+    // Check if a hit just completed (falling edge detected by rebound detector)
     edrumulus_rebound_detector_t *det = &g_rebound_detectors[ch];
     
     if (det->hit_velocity > 0 && det->total_hits_detected > 0) {
-        // Hit completed! Check if this is a new hit we haven't reported yet
-        // We use a simple trick: compare total_hits_detected with what we tracked
         static uint32_t last_reported_hits[EDRUMULUS_MAX_ADC_CHANNELS] = {0};
         
         if (det->total_hits_detected > last_reported_hits[ch]) {
             last_reported_hits[ch] = det->total_hits_detected;
             
-            // Build hit event
+            // Calculate position from dual-piezo data
+            // Placeholder: amplitude ratio (center=64, edge=0 or 127)
+            // Real TDOA will be added in Issue #5
+            uint8_t position = EDRUMULUS_POSITION_CENTER; // Default center
+            uint16_t p1 = g_pad_state[pad_id].peak_piezo1;
+            uint16_t p2 = g_pad_state[pad_id].peak_piezo2;
+            if ((p1 + p2) > 0) {
+                // Simple amplitude ratio: 0=all piezo1, 127=all piezo2, 64=equal
+                float ratio = (float)p2 / (float)(p1 + p2);
+                position = (uint8_t)(ratio * 127.0f);
+                if (position > 127) position = 127;
+            }
+            
+            // Build hit event with full dual-piezo data
             hit_event->channel = ch;
+            hit_event->pad_id = pad_id;
             hit_event->velocity = det->hit_velocity;
-            hit_event->note = 38; // MIDI_NOTE_SNARE_DRUM (default, configurable later)
+            hit_event->position = position;
+            hit_event->note = pad->midi_note;
             hit_event->timestamp = raw->timestamp_us;
-            hit_event->is_rimshot = false;
+            hit_event->is_rimshot = (det->edge_detector.rise_rate > 0.5f); // Simple rimshot
+            hit_event->piezo1_raw = g_pad_state[pad_id].peak_piezo1;
+            hit_event->piezo2_raw = g_pad_state[pad_id].peak_piezo2;
+            
+            // Reset per-pad state for next hit
+            memset(&g_pad_state[pad_id], 0, sizeof(g_pad_state[pad_id]));
             
             // Update mask time adaptively based on velocity
             g_last_hit_time[ch] = xTaskGetTickCount();
