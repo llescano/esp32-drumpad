@@ -105,7 +105,7 @@ esp32-drumpad/
 |--------|------|-------|
 | Piezo 1 (ADC) | GPIO4 | ADC1_CH4, primary sensor |
 | Piezo 2 (ADC) | GPIO5 | ADC1_CH5, secondary sensor |
-| Status LED | GPIO48 | WS2812 addressable RGB |
+| Status Status LED.*GPIO21 | WS2812 addressable RGB |
 | Encoder A | GPIO1 | Rotary encoder |
 | Encoder B | GPIO2 | Rotary encoder |
 | Encoder Button | GPIO3 | Push-button |

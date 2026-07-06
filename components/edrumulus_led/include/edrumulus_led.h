@@ -15,8 +15,8 @@
 extern "C" {
 #endif
 
-// GPIO Pin Definition for ESP32-S3
-#define EDRUMULUS_GPIO_LED    48
+// GPIO Pin Definition for ESP32-S3 (Waveshare S3 Zero: WS2812 on GPIO21)
+#define EDRUMULUS_GPIO_LED    21
 
 /**
  * @brief LED configuration structure

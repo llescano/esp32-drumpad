@@ -94,7 +94,7 @@ dsp_task (Core 1)
 |-------|------|-------------|
 | Piezo 1 (ADC) | GPIO4 | ADC1_CH4, sensor primario |
 | Piezo 2 (ADC) | GPIO5 | ADC1_CH5, sensor secundario |
-| LED RGB | GPIO48 | WS2812 addressable |
+| LED RGB | GPIO21.*WS2812 addressable |
 | Encoder A | GPIO1 | Rotación |
 | Encoder B | GPIO2 | Rotación |
 | Encoder Botón | GPIO3 | Pulsador |
