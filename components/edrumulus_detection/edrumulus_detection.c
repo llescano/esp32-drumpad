@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "soc/adc_channel.h"
+#include "hal/adc_types.h"
 #include <math.h>
 #include <string.h>
 #include <stdarg.h>
@@ -39,7 +40,7 @@ static adc_continuous_handle_t g_adc_cont_handle = NULL;
 static edrumulus_adc_ringbuf_t g_adc_ringbuf = {0};
 
 // ADC continuous pattern table (2 channels: piezo1 on CH4, piezo2 on CH5)
-static adc_digi_pattern_table_t g_adc_pattern[2] = {
+static adc_digi_pattern_config_t g_adc_pattern[2] = {
     {
         .atten = ADC_ATTEN_DB_12,
         .channel = ADC_CHANNEL_4,   // GPIO4 -> piezo1
@@ -130,6 +131,272 @@ static float process_biquad(float input, const edrumulus_biquad_coeffs_t *coeffs
     return output;
 }
 
+// === RING BUFFER FUNCTIONS (lock-free, single producer / single consumer) ===
+
+static void ringbuf_reset(edrumulus_adc_ringbuf_t *rb)
+{
+    rb->head = 0;
+    rb->tail = 0;
+    rb->overflow_count = 0;
+    rb->initialized = true;
+}
+
+static bool ringbuf_push(edrumulus_adc_ringbuf_t *rb, const edrumulus_adc_sample_t *sample)
+{
+    if (!rb || !sample) return false;
+    
+    uint32_t next_head = (rb->head + 1) % EDRUMULUS_ADC_RINGBUF_SIZE;
+    
+    // Check for overflow
+    if (next_head == rb->tail) {
+        rb->overflow_count++;
+        // Overwrite oldest sample (move tail forward)
+        rb->tail = (rb->tail + 1) % EDRUMULUS_ADC_RINGBUF_SIZE;
+    }
+    
+    rb->buffer[rb->head] = *sample;
+    rb->head = next_head;
+    return true;
+}
+
+static bool ringbuf_pop(edrumulus_adc_ringbuf_t *rb, edrumulus_adc_sample_t *sample)
+{
+    if (!rb || !sample) return false;
+    if (rb->head == rb->tail) return false; // Empty
+    
+    *sample = rb->buffer[rb->tail];
+    rb->tail = (rb->tail + 1) % EDRUMULUS_ADC_RINGBUF_SIZE;
+    return true;
+}
+
+static uint32_t ringbuf_count(const edrumulus_adc_ringbuf_t *rb)
+{
+    return (rb->head >= rb->tail) 
+           ? (rb->head - rb->tail) 
+           : (EDRUMULUS_ADC_RINGBUF_SIZE - rb->tail + rb->head);
+}
+
+// === ADC CONTINUOUS DMA CALLBACK ===
+
+static bool IRAM_ATTR adc_continuous_dma_callback(adc_continuous_handle_t handle, 
+                                                    const adc_continuous_evt_data_t *edata, 
+                                                    void *user_data)
+{
+    (void)handle;
+    (void)user_data;
+    
+    if (!edata || !edata->conv_frame_buffer) return false;
+    
+    // Parse conversion frame: each conversion = 4 bytes (adc_digi_output_data_t for ESP32-S3)
+    // TYPE2 format: data[11:0], reserved[12], channel[15:13], unit[16:17], reserved[31:17]
+    uint8_t *frame = edata->conv_frame_buffer;
+    uint32_t frame_size = edata->size;
+    uint32_t pos = 0;
+    uint32_t now = (uint32_t)(esp_timer_get_time());
+    
+    while (pos + sizeof(adc_digi_output_data_t) <= frame_size) {
+        adc_digi_output_data_t *conv = (adc_digi_output_data_t *)&frame[pos];
+        pos += sizeof(adc_digi_output_data_t);
+        
+        edrumulus_adc_sample_t sample = {
+            .channel = conv->type2.channel,
+            .raw_value = conv->type2.data,
+            .timestamp_us = now,
+        };
+        ringbuf_push(&g_adc_ringbuf, &sample);
+    }
+    
+    return true;
+}
+
+// === PUBLIC ADC CONTINUOUS API ===
+
+esp_err_t edrumulus_detection_adc_continuous_init(void)
+{
+    if (g_adc_cont_handle != NULL) {
+        ESP_LOGW(TAG, "ADC continuous already initialized");
+        return ESP_OK;
+    }
+    
+    ESP_LOGI(TAG, "Initializing ADC continuous with DMA (2 channels)");
+    
+    // Allocate continuous ADC handle
+    // Each conversion result = sizeof(adc_digi_output_data_t) = 4 bytes (ESP32-S3)
+    size_t conv_size = sizeof(adc_digi_output_data_t);
+    adc_continuous_handle_cfg_t adc_config = {
+        .max_store_buf_size = EDRUMULUS_ADC_RINGBUF_SIZE * conv_size,
+        .conv_frame_size = EDRUMULUS_ADC_CONT_FRAME_SIZE * conv_size,
+    };
+    
+    esp_err_t ret = adc_continuous_new_handle(&adc_config, &g_adc_cont_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create ADC continuous handle: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    // Configure ADC channels and conversion pattern
+    // sample_freq_hz = total conversion rate (2 channels * 8kHz per channel)
+    adc_continuous_config_t cont_cfg = {
+        .pattern_num = 2,               // 2 channels
+        .adc_pattern = g_adc_pattern,
+        .sample_freq_hz = EDRUMULUS_ADC_SAMPLE_RATE * 2,  // 16k conv/s for 2 ch @ 8kHz each
+        .conv_mode = ADC_CONV_SINGLE_UNIT_1,
+        .format = ADC_DIGI_OUTPUT_FORMAT_TYPE2,  // 4 bytes per conv (ESP32-S3)
+    };
+    
+    ret = adc_continuous_config(g_adc_cont_handle, &cont_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure ADC continuous: %s", esp_err_to_name(ret));
+        adc_continuous_deinit(g_adc_cont_handle);
+        g_adc_cont_handle = NULL;
+        return ret;
+    }
+    
+    // Register DMA conversion callback
+    adc_continuous_evt_cbs_t cbs = {
+        .on_conv_done = adc_continuous_dma_callback,
+    };
+    
+    ret = adc_continuous_register_event_callbacks(g_adc_cont_handle, &cbs, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register ADC callback: %s", esp_err_to_name(ret));
+        adc_continuous_deinit(g_adc_cont_handle);
+        g_adc_cont_handle = NULL;
+        return ret;
+    }
+    
+    // Initialize ring buffer
+    ringbuf_reset(&g_adc_ringbuf);
+    
+    ESP_LOGI(TAG, "ADC continuous initialized: 2 channels, %d Hz, %d frame size",
+             EDRUMULUS_ADC_SAMPLE_RATE, EDRUMULUS_ADC_CONT_FRAME_SIZE);
+    
+    return ESP_OK;
+}
+
+esp_err_t edrumulus_detection_adc_continuous_start(void)
+{
+    if (g_adc_cont_handle == NULL) {
+        ESP_LOGE(TAG, "ADC continuous not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (g_adc_continuous_running) {
+        ESP_LOGW(TAG, "ADC continuous already running");
+        return ESP_OK;
+    }
+    
+    esp_err_t ret = adc_continuous_start(g_adc_cont_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start ADC continuous: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    g_adc_continuous_running = true;
+    ESP_LOGI(TAG, "ADC continuous started (DMA active)");
+    
+    return ESP_OK;
+}
+
+esp_err_t edrumulus_detection_adc_continuous_stop(void)
+{
+    if (g_adc_cont_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (!g_adc_continuous_running) {
+        return ESP_OK;
+    }
+    
+    esp_err_t ret = adc_continuous_stop(g_adc_cont_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to stop ADC continuous: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    g_adc_continuous_running = false;
+    ESP_LOGI(TAG, "ADC continuous stopped");
+    
+    return ESP_OK;
+}
+
+esp_err_t edrumulus_detection_adc_continuous_deinit(void)
+{
+    if (g_adc_cont_handle == NULL) {
+        return ESP_OK;
+    }
+    
+    if (g_adc_continuous_running) {
+        edrumulus_detection_adc_continuous_stop();
+    }
+    
+    esp_err_t ret = adc_continuous_deinit(g_adc_cont_handle);
+    g_adc_cont_handle = NULL;
+    g_adc_continuous_running = false;
+    
+    ESP_LOGI(TAG, "ADC continuous deinitialized");
+    
+    return ret;
+}
+
+bool edrumulus_detection_get_sample(edrumulus_adc_sample_t *sample)
+{
+    if (!g_adc_ringbuf.initialized) return false;
+    return ringbuf_pop(&g_adc_ringbuf, sample);
+}
+
+esp_err_t edrumulus_detection_get_buffer_level(uint32_t *count)
+{
+    if (!count) return ESP_ERR_INVALID_ARG;
+    *count = ringbuf_count(&g_adc_ringbuf);
+    return ESP_OK;
+}
+
+uint32_t edrumulus_detection_get_overflow_count(void)
+{
+    return g_adc_ringbuf.overflow_count;
+}
+
+// === LEGACY ONE-SHOT READ (конвертирует из ring buffer) ===
+
+esp_err_t edrumulus_detection_read_channel(uint8_t channel, int *value)
+{
+    if (!g_detection_initialized) {
+        ESP_LOGE(TAG, "Detection not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (channel >= EDRUMULUS_MAX_ADC_CHANNELS || value == NULL) {
+        ESP_LOGE(TAG, "Invalid parameters");
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Scan ring buffer for latest sample from requested channel
+    edrumulus_adc_sample_t sample;
+    bool found = false;
+    uint32_t newest_timestamp = 0;
+    int latest_value = 0;
+    
+    // Drain ring buffer, looking for matching channel
+    // This gives us the latest value and clears the buffer
+    while (edrumulus_detection_get_sample(&sample)) {
+        if (sample.channel == channel && sample.timestamp_us >= newest_timestamp) {
+            newest_timestamp = sample.timestamp_us;
+            latest_value = sample.raw_value;
+            found = true;
+        }
+    }
+    
+    if (found) {
+        *value = latest_value;
+        return ESP_OK;
+    }
+    
+    // If ring buffer was empty, return last known value or 0
+    *value = 0;
+    return ESP_OK;
+}
+
 esp_err_t edrumulus_detection_init(const edrumulus_detection_config_t *config)
 {
     if (config == NULL) {
@@ -144,31 +411,13 @@ esp_err_t edrumulus_detection_init(const edrumulus_detection_config_t *config)
 
     ESP_LOGI(TAG, "Initializing detection subsystem");
     
-    // Configure ADC
-    adc_oneshot_unit_init_cfg_t init_config = {
-        .unit_id = ADC_UNIT_1,
-        .ulp_mode = ADC_ULP_MODE_DISABLE,
-    };
-    
-    esp_err_t ret = adc_oneshot_new_unit(&init_config, &g_adc_handle);
+    // Initialize ADC continuous mode with DMA (dual-channel for piezo1 + piezo2)
+    esp_err_t ret = edrumulus_detection_adc_continuous_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialize ADC: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to initialize continuous ADC: %s", esp_err_to_name(ret));
         return ret;
     }
-    
-    // Configure ADC channels
-    adc_oneshot_chan_cfg_t chan_config = {
-        .bitwidth = ADC_BITWIDTH_12,
-        .atten = ADC_ATTEN_DB_12,
-    };
-    
-    for (int i = 0; i < EDRUMULUS_MAX_ADC_CHANNELS; i++) {
-        ret = adc_oneshot_config_channel(g_adc_handle, ADC_CHANNEL_4 + i, &chan_config);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to configure ADC channel %d: %s", i, esp_err_to_name(ret));
-            return ret;
-        }
-    }
+    ESP_LOGI(TAG, "ADC continuous mode initialized: 2 channels @ %d Hz", EDRUMULUS_ADC_SAMPLE_RATE);
     
     g_detection_initialized = true;
     ESP_LOGI(TAG, "Detection subsystem initialized successfully");
@@ -185,6 +434,14 @@ esp_err_t edrumulus_detection_init(const edrumulus_detection_config_t *config)
         ESP_LOGE(TAG, "Failed to initialize band-pass filter: %s", esp_err_to_name(ret));
         return ret;
     }
+    
+    // Start continuous ADC conversion
+    ret = edrumulus_detection_adc_continuous_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start continuous ADC: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_LOGI(TAG, "ADC continuous conversion started (DMA active)");
     
     // PHASE 2: Inicializar validación del filtro
     esp_err_t filter_validation_result = edrumulus_filter_validation_init();
@@ -2133,21 +2390,6 @@ bool edrumulus_detection_is_in_mask_period(uint8_t channel)
     return true;
 }
 
-esp_err_t edrumulus_detection_read_channel(uint8_t channel, int *value)
-{
-    if (!g_detection_initialized) {
-        ESP_LOGE(TAG, "Detection not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    if (channel >= EDRUMULUS_MAX_ADC_CHANNELS || value == NULL) {
-        ESP_LOGE(TAG, "Invalid parameters");
-        return ESP_ERR_INVALID_ARG;
-    }
-    
-    return adc_oneshot_read(g_adc_handle, ADC_CHANNEL_4 + channel, value);
-}
-
 esp_err_t edrumulus_detection_deinit(void)
 {
     if (!g_detection_initialized) {
@@ -2162,6 +2404,9 @@ esp_err_t edrumulus_detection_deinit(void)
         edrumulus_detection_stop_piezo_monitor();
     }
     
+    // Stop and deinitialize ADC continuous with DMA
+    edrumulus_detection_adc_continuous_deinit();
+    
     // Deinitialize filter
     edrumulus_detection_filter_deinit();
     
@@ -2173,11 +2418,6 @@ esp_err_t edrumulus_detection_deinit(void)
     
     // PHASE 1: Deinitialize ADC validation
     edrumulus_adc_validation_deinit();
-    
-    if (g_adc_handle) {
-        adc_oneshot_del_unit(g_adc_handle);
-        g_adc_handle = NULL;
-    }
     
     g_detection_initialized = false;
     g_piezo_initialized = false;
@@ -3262,4 +3502,85 @@ esp_err_t edrumulus_adc_validation_test_precision(uint8_t channel, float test_vo
                                precision->precision_valid ? "PASS" : "FAIL");
     
     return ESP_OK;
+}
+
+// === VALIDATION: Issue #1 - ADC Continuous with DMA ===
+// Procedure:
+//   1. edrumulus_detection_adc_continuous_init()      -> must return ESP_OK
+//   2. edrumulus_detection_adc_continuous_start()       -> must return ESP_OK
+//   3. Wait 100ms, then read 1000 samples via edrumulus_detection_get_sample()
+//   4. Verify sample rate: count samples / elapsed time ≈ EDRUMULUS_ADC_SAMPLE_RATE * 2
+//   5. Verify no overflow: edrumulus_detection_get_overflow_count() == 0
+//   6. Verify both channels (CH4=piezo1, CH5=piezo2) have data
+//   7. edrumulus_detection_adc_continuous_stop()        -> must return ESP_OK
+//   8. edrumulus_detection_adc_continuous_deinit()      -> must return ESP_OK
+//   9. Build compiles without errors or warnings
+//
+// HITL (Hardware-in-the-Loop):
+//   - Connect piezo1 to GPIO4, piezo2 to GPIO5 (or signal generator with 200Hz sine)
+//   - Run the validation above via console command 'test adc_continuous'
+//   - Verify on oscilloscope: ADC DMA output toggling at 8kHz
+//   - Tap piezo1 only: verify samples on ch4 change, ch5 stays flat
+//   - Tap piezo2 only: verify samples on ch5 change, ch4 stays flat
+
+/**
+ * @brief Validate ADC continuous mode (compile-time + runtime checks)
+ * 
+ * Call this after edrumulus_detection_adc_continuous_init() and _start().
+ * Verify sample rate, no overflows, and both channels active.
+ * 
+ * @param duration_ms Duration to accumulate samples (e.g. 500ms)
+ * @return esp_err_t ESP_OK if validation passes, ESP_FAIL otherwise
+ */
+esp_err_t edrumulus_detection_adc_continuous_validate(uint32_t duration_ms)
+{
+    if (!g_adc_continuous_running) {
+        ESP_LOGE(TAG, "[VALIDATE] ADC continuous not running");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    ESP_LOGI(TAG, "[VALIDATE] Starting ADC continuous validation (%lu ms)", duration_ms);
+    
+    uint32_t sample_count = 0;
+    uint32_t ch4_count = 0;
+    uint32_t ch5_count = 0;
+    uint32_t overflow_before = g_adc_ringbuf.overflow_count;
+    uint32_t start_ms = get_timestamp_ms();
+    
+    edrumulus_adc_sample_t sample;
+    while (get_timestamp_ms() - start_ms < duration_ms) {
+        while (edrumulus_detection_get_sample(&sample)) {
+            sample_count++;
+            if (sample.channel == 4) ch4_count++;
+            if (sample.channel == 5) ch5_count++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    
+    uint32_t elapsed_ms = get_timestamp_ms() - start_ms;
+    uint32_t overflow_count = g_adc_ringbuf.overflow_count - overflow_before;
+    
+    // Calculate actual sample rate (both channels)
+    float actual_rate = (float)sample_count * 1000.0f / elapsed_ms;
+    float rate_error = fabsf(actual_rate - EDRUMULUS_ADC_SAMPLE_RATE * 2) / (EDRUMULUS_ADC_SAMPLE_RATE * 2);
+    bool rate_ok = (rate_error <= 0.10f);  // 10% tolerance for validation
+    
+    bool overflow_ok = (overflow_count == 0);
+    bool ch4_ok = (ch4_count > 0);
+    bool ch5_ok = (ch5_count > 0);
+    bool result = rate_ok && overflow_ok && ch4_ok && ch5_ok;
+    
+    ESP_LOGI(TAG, "[VALIDATE] === ADC Continuous Results ===");
+    ESP_LOGI(TAG, "[VALIDATE] Samples: %lu in %lu ms (%.0f Hz, target %d Hz, err %.1f%%)",
+             sample_count, elapsed_ms, actual_rate, EDRUMULUS_ADC_SAMPLE_RATE * 2, rate_error * 100.0f);
+    ESP_LOGI(TAG, "[VALIDATE] Ch4 samples: %lu, Ch5 samples: %lu", ch4_count, ch5_count);
+    ESP_LOGI(TAG, "[VALIDATE] Overflows: %lu", overflow_count);
+    ESP_LOGI(TAG, "[VALIDATE] Rate: %s, Overflow: %s, Ch4: %s, Ch5: %s",
+             rate_ok ? "PASS" : "FAIL",
+             overflow_ok ? "PASS" : "FAIL",
+             ch4_ok ? "PASS" : "FAIL",
+             ch5_ok ? "PASS" : "FAIL");
+    ESP_LOGI(TAG, "[VALIDATE] === OVERALL: %s ===", result ? "PASS" : "FAIL");
+    
+    return result ? ESP_OK : ESP_FAIL;
 }

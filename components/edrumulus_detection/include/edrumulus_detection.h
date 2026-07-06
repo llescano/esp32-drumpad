@@ -169,6 +169,19 @@ esp_err_t edrumulus_detection_get_buffer_level(uint32_t *count);
 uint32_t edrumulus_detection_get_overflow_count(void);
 
 /**
+ * @brief Validate ADC continuous mode operation
+ * 
+ * Collects samples for duration_ms and verifies:
+ * - Sample rate within 10% of target (16k samples/s for 2 channels)
+ * - No buffer overflows
+ * - Both channels (CH4=piezo1, CH5=piezo2) producing data
+ * 
+ * @param duration_ms Validation duration in milliseconds
+ * @return esp_err_t ESP_OK if all checks pass, ESP_FAIL otherwise
+ */
+esp_err_t edrumulus_detection_adc_continuous_validate(uint32_t duration_ms);
+
+/**
  * @brief Configure pad settings
  * 
  * @param pad_id Pad ID (0-7)
