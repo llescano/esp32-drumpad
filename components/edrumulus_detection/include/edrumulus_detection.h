@@ -17,10 +17,36 @@
 extern "C" {
 #endif
 
-// ADC Configuration for ESP32-S3
-#define EDRUMULUS_MAX_ADC_CHANNELS  6
-#define EDRUMULUS_ADC_SAMPLE_RATE   8000
-#define EDRUMULUS_ADC_RESOLUTION    12
+// ADC Configuration for ESP32-S3 (continuous/DMA mode)
+#define EDRUMULUS_MAX_ADC_CHANNELS      6
+#define EDRUMULUS_ADC_SAMPLE_RATE       8000    // Target sample rate (Hz)
+#define EDRUMULUS_ADC_RESOLUTION        12      // 12-bit
+#define EDRUMULUS_ADC_CONT_FRAME_SIZE   256     // Samples per DMA frame
+#define EDRUMULUS_ADC_RINGBUF_SIZE      512     // Ring buffer entries (2x frame)
+
+// ADC channel mapping for dual-piezo pad
+#define EDRUMULUS_ADC_CH_PIEZO1         ADC_CHANNEL_4   // GPIO4
+#define EDRUMULUS_ADC_CH_PIEZO2         ADC_CHANNEL_5   // GPIO5
+
+/**
+ * @brief ADC sample structure (one per channel per conversion)
+ */
+typedef struct {
+    uint8_t  channel;       ///< ADC channel (0-5)
+    uint16_t raw_value;     ///< Raw 12-bit ADC value (0-4095)
+    uint32_t timestamp_us;  ///< Timestamp in microseconds
+} edrumulus_adc_sample_t;
+
+/**
+ * @brief Ring buffer for ADC continuous samples (lock-free, single producer/consumer)
+ */
+typedef struct {
+    edrumulus_adc_sample_t buffer[EDRUMULUS_ADC_RINGBUF_SIZE];  ///< Circular buffer
+    volatile uint32_t head;     ///< Write index (producer, ADC DMA callback)
+    volatile uint32_t tail;     ///< Read index (consumer, DSP task)
+    uint32_t overflow_count;    ///< Lost samples due to overflow
+    bool initialized;           ///< Buffer ready
+} edrumulus_adc_ringbuf_t;
 
 /**
  * @brief Detection configuration structure
@@ -67,13 +93,80 @@ typedef struct {
 esp_err_t edrumulus_detection_init(const edrumulus_detection_config_t *config);
 
 /**
- * @brief Read ADC channel value
+ * @brief Read ADC channel value (one-shot, legacy compatibility)
+ * 
+ * When continuous mode is active, reads latest value from ring buffer.
+ * Falls back to one-shot read if continuous mode is not running.
  * 
  * @param channel ADC channel (0-5)
  * @param value Pointer to store the read value
  * @return esp_err_t ESP_OK on success, error code otherwise
  */
 esp_err_t edrumulus_detection_read_channel(uint8_t channel, int *value);
+
+/**
+ * @brief Initialize ADC continuous mode with DMA
+ * 
+ * Configures adc_continuous driver with dual-channel pattern (piezo1, piezo2)
+ * and DMA frame size for 8kHz sampling. Sets up ring buffer for Core 0 -> Core 1
+ * communication.
+ * 
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_adc_continuous_init(void);
+
+/**
+ * @brief Start ADC continuous conversion with DMA
+ * 
+ * Starts the continuous ADC conversion. Samples arrive in ring buffer.
+ * Can be called after edrumulus_detection_adc_continuous_init().
+ * 
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_adc_continuous_start(void);
+
+/**
+ * @brief Stop ADC continuous conversion
+ * 
+ * Stops continuous ADC conversion. Ring buffer retains last samples.
+ * 
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_adc_continuous_stop(void);
+
+/**
+ * @brief Deinitialize ADC continuous mode
+ * 
+ * Stops conversion and frees ADC continuous handle.
+ * 
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_adc_continuous_deinit(void);
+
+/**
+ * @brief Pop next sample from ADC ring buffer (non-blocking)
+ * 
+ * Called from DSP task (Core 1) to consume ADC samples.
+ * 
+ * @param[out] sample Pointer to store the sample
+ * @return true if sample available, false if buffer empty
+ */
+bool edrumulus_detection_get_sample(edrumulus_adc_sample_t *sample);
+
+/**
+ * @brief Get ring buffer fill level
+ * 
+ * @param[out] count Pointer to store number of samples in buffer
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_get_buffer_level(uint32_t *count);
+
+/**
+ * @brief Get total overflow count (lost samples)
+ * 
+ * @return uint32_t Number of samples lost due to buffer overflow
+ */
+uint32_t edrumulus_detection_get_overflow_count(void);
 
 /**
  * @brief Configure pad settings

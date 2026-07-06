@@ -5,11 +5,10 @@
 
 #include "edrumulus_detection.h"
 #include "esp_log.h"
-#include "esp_adc/adc_oneshot.h"
-#include "esp_adc/adc_cali.h"
-#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_continuous.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "soc/adc_channel.h"
 #include <math.h>
 #include <string.h>
 #include <stdarg.h>
@@ -33,7 +32,27 @@ static edrumulus_rebound_detector_t g_rebound_detectors[EDRUMULUS_MAX_ADC_CHANNE
 
 // Detection subsystem state
 static bool g_detection_initialized = false;
-static adc_oneshot_unit_handle_t g_adc_handle = NULL;
+static bool g_adc_continuous_running = false;
+
+// ADC continuous handle and ring buffer
+static adc_continuous_handle_t g_adc_cont_handle = NULL;
+static edrumulus_adc_ringbuf_t g_adc_ringbuf = {0};
+
+// ADC continuous pattern table (2 channels: piezo1 on CH4, piezo2 on CH5)
+static adc_digi_pattern_table_t g_adc_pattern[2] = {
+    {
+        .atten = ADC_ATTEN_DB_12,
+        .channel = ADC_CHANNEL_4,   // GPIO4 -> piezo1
+        .unit = ADC_UNIT_1,
+        .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
+    },
+    {
+        .atten = ADC_ATTEN_DB_12,
+        .channel = ADC_CHANNEL_5,   // GPIO5 -> piezo2
+        .unit = ADC_UNIT_1,
+        .bit_width = SOC_ADC_DIGI_MAX_BITWIDTH,
+    }
+};
 
 // Piezo detection state
 static bool g_piezo_initialized = false;
