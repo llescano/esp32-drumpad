@@ -87,12 +87,12 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Detection queue created successfully");
 
-    // Initialize TinyUSB first - CRÍTICO para USB MIDI
-    ESP_LOGI(TAG, "Initializing TinyUSB driver...");
+    // Initialize TinyUSB with custom MIDI descriptors
+    ESP_LOGI(TAG, "Initializing TinyUSB driver (MIDI only)...");
     tinyusb_config_t const tusb_cfg = {
         .device_descriptor = &desc_device,
         .string_descriptor = string_desc_arr,
-        .string_descriptor_count = 6, // 4 lang + 5 strings (including CDC)
+        .string_descriptor_count = 5, // LANG + 4 custom
         .external_phy = false,
 #if (TUD_OPT_HIGH_SPEED)
         .fs_configuration_descriptor = desc_fs_configuration,
