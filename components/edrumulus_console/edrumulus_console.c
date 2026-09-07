@@ -14,6 +14,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "edrumulus_config.h"
+#include "edrumulus_synthtest.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -405,6 +406,86 @@ static void register_reset_command(void) {
 // FUNCIONES PÚBLICAS
 // ============================================================================
 
+// Subcomandos sintéticos de 'test' (issue #20)
+static void console_synthtest_ensure_mode(void) {
+    if (!edrumulus_synthtest_mode_is_enabled()) {
+        if (edrumulus_synthtest_mode_enable() == ESP_OK) {
+            printf("Modo sintetico activado (ADC detenido)\n");
+        } else {
+            printf("ERROR: no se pudo activar el modo sintetico\n");
+        }
+    }
+}
+
+static void console_synthtest_command(const char* input, const char* sub, const float value) {
+    if (strcmp(sub, "hit") == 0) {
+        // test hit [vel] [pos]  (defaults: 100, 64)
+        float vel = 100.0f;
+        float pos = 64.0f;
+        sscanf(input, "%*s %*s %f %f", &vel, &pos);
+        if (vel < 1.0f) vel = 1.0f;
+        if (vel > 127.0f) vel = 127.0f;
+        if (pos < 0.0f) pos = 0.0f;
+        if (pos > 127.0f) pos = 127.0f;
+        console_synthtest_ensure_mode();
+        esp_err_t ret = edrumulus_synthtest_trigger((uint8_t)vel, (uint8_t)pos);
+        if (ret == ESP_OK) {
+            printf("Golpe sintetico: vel=%d pos=%d\n", (int)vel, (int)pos);
+        } else {
+            printf("ERROR: golpe sintetico no encolado (%d)\n", ret);
+        }
+    }
+    else if (strcmp(sub, "auto") == 0) {
+        // test auto [interval_ms]  (default 500)
+        float interval = (value > 0.0f) ? value : 500.0f;
+        console_synthtest_ensure_mode();
+        esp_err_t ret = edrumulus_synthtest_auto_start((uint32_t)interval);
+        if (ret == ESP_OK) {
+            printf("Auto test iniciado: golpe cada %d ms\n", (int)interval);
+        } else {
+            printf("ERROR: auto test no iniciado (%d)\n", ret);
+        }
+    }
+    else if (strcmp(sub, "stop") == 0) {
+        // test stop: detiene la generacion y vuelve al ADC real
+        edrumulus_synthtest_auto_stop();
+        edrumulus_synthtest_mode_disable();
+        printf("Test sintetico detenido, ADC restaurado\n");
+    }
+    else if (strcmp(sub, "mode") == 0) {
+        // test mode [on|off] (sin argumento muestra el estado)
+        char mode_arg[16] = "";
+        sscanf(input, "%*s %*s %15s", mode_arg);
+        if (strcmp(mode_arg, "off") == 0) {
+            edrumulus_synthtest_auto_stop();
+            edrumulus_synthtest_mode_disable();
+            printf("Modo sintetico: OFF (ADC restaurado)\n");
+        } else {
+            if (strcmp(mode_arg, "on") == 0) {
+                console_synthtest_ensure_mode();
+            }
+            printf("Modo sintetico: %s\n",
+                   edrumulus_synthtest_mode_is_enabled() ? "ON" : "OFF");
+        }
+    }
+    else if (strcmp(sub, "status") == 0) {
+        edrumulus_synthtest_params_t p;
+        edrumulus_synthtest_get_params(&p);
+        printf("=== Test Sintetico ===\n");
+        printf("  Modo: %s\n", edrumulus_synthtest_mode_is_enabled() ? "ON" : "OFF");
+        printf("  Auto: %s\n", edrumulus_synthtest_auto_is_active() ? "ON" : "OFF");
+        printf("  Hits inyectados: %lu\n",
+               (unsigned long)edrumulus_synthtest_get_hits_injected());
+        printf("  Freq: %.1f Hz  Decay: %.1f ms  Rise: %.2f ms  Dur: %.0f ms\n",
+               p.frequency_hz, p.decay_ms, p.rise_ms, p.duration_ms);
+        printf("======================\n");
+    }
+    else {
+        printf("Subcomando sintetico no valido: %s\n", sub);
+        printf("Opciones: hit, auto, stop, mode, status\n");
+    }
+}
+
 // Función para procesar comandos simples
 void edrumulus_console_process_command(const char* input) {
     char command[32];
@@ -423,7 +504,16 @@ void edrumulus_console_process_command(const char* input) {
         printf("\n• test <tipo>\n");
         printf("  Ejecutar pruebas individuales o todas\n");
         printf("  Tipos: edge, decay, velocity, adaptive, all\n");
-        
+
+        printf("\n• Test sintetico (sin hardware, issue #19/#20)\n");
+        printf("  test hit [vel] [pos]  Dispara un golpe sintetico (def: 100, 64)\n");
+        printf("  test auto [interval_ms]  Golpes periodicos (def: 500 ms)\n");
+        printf("  test stop  Detiene el test y restaura el ADC\n");
+        printf("  test mode [on|off]  Activa/desactiva el modo sintetico\n");
+        printf("  test status  Estado del generador sintetico\n");
+        printf("  Parametros: set synth_freq <hz>, set synth_decay <ms>,\n");
+        printf("              set synth_rise <ms>, set synth_dur <ms>\n");
+
         printf("\n• set <parámetro> <valor>\n");
         printf("  Establecer parámetros de configuración\n");
         printf("  Edge Detector: edge_threshold, edge_sensitivity, rise_rate\n");
@@ -506,9 +596,15 @@ void edrumulus_console_process_command(const char* input) {
             printf("  Decay Analyzer: %s\n", ret2 == ESP_OK ? "PASSED" : "FAILED");
             printf("  Velocity Validator: %s\n", ret3 == ESP_OK ? "PASSED" : "FAILED");
             printf("  Adaptive Threshold: %s\n", ret4 == ESP_OK ? "PASSED" : "FAILED");
+        } else if (strcmp(param, "hit") == 0 || strcmp(param, "auto") == 0 ||
+                   strcmp(param, "stop") == 0 || strcmp(param, "mode") == 0 ||
+                   strcmp(param, "status") == 0) {
+            // Subcomandos del modo test sintetico (issue #20)
+            console_synthtest_command(input, param, value);
         } else {
             printf("Tipo de prueba no válido.\n");
             printf("Opciones: edge, decay, velocity, adaptive, all\n");
+            printf("Test sintetico: hit, auto, stop, mode, status\n");
         }
     }
     else if (strcmp(command, "set") == 0 && args >= 3) {
@@ -558,6 +654,22 @@ void edrumulus_console_process_command(const char* input) {
         } else if (strcmp(param, "stability") == 0) {
             g_console_config.stability_threshold = value;
             printf("Stability threshold establecido a: %.3f\n", value);
+        }
+        // Synthetic test parameters (issue #20)
+        else if (strcmp(param, "synth_freq") == 0 || strcmp(param, "synth_decay") == 0 ||
+                 strcmp(param, "synth_rise") == 0 || strcmp(param, "synth_dur") == 0) {
+            edrumulus_synthtest_params_t p;
+            edrumulus_synthtest_get_params(&p);
+            if (strcmp(param, "synth_freq") == 0)  p.frequency_hz = value;
+            if (strcmp(param, "synth_decay") == 0) p.decay_ms = value;
+            if (strcmp(param, "synth_rise") == 0)  p.rise_ms = value;
+            if (strcmp(param, "synth_dur") == 0)   p.duration_ms = value;
+            esp_err_t ret = edrumulus_synthtest_set_params(&p);
+            if (ret == ESP_OK) {
+                printf("%s establecido a: %.2f\n", param, (double)value);
+            } else {
+                printf("ERROR: valor fuera de rango (%d)\n", ret);
+            }
         } else {
             printf("Parámetro no válido: %s\n", param);
             printf("\nParámetros disponibles:\n");
