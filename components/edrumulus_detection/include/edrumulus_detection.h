@@ -219,10 +219,35 @@ esp_err_t edrumulus_detection_get_buffer_level(uint32_t *count);
 
 /**
  * @brief Get total overflow count (lost samples)
- * 
+ *
  * @return uint32_t Number of samples lost due to buffer overflow
  */
 uint32_t edrumulus_detection_get_overflow_count(void);
+
+/**
+ * @brief Inject a sample into the ADC ring buffer (synthetic test mode)
+ *
+ * Alternative producer used by the synthetic test generator (issue #19).
+ * The caller MUST stop the ADC continuous conversion first
+ * (edrumulus_detection_adc_continuous_stop) so the ring buffer keeps a
+ * single producer at a time.
+ *
+ * @param sample Sample to inject (channel must be < EDRUMULUS_MAX_ADC_CHANNELS)
+ * @return esp_err_t ESP_OK on success, error code otherwise
+ */
+esp_err_t edrumulus_detection_inject_sample(const edrumulus_adc_sample_t *sample);
+
+/**
+ * @brief Reset the ADC ring buffer (drops all pending samples)
+ */
+void edrumulus_detection_ringbuf_reset(void);
+
+/**
+ * @brief Check whether ADC continuous conversion is currently running
+ *
+ * @return bool true if the ADC DMA is converting, false otherwise
+ */
+bool edrumulus_detection_adc_is_running(void);
 
 /**
  * @brief Validate ADC continuous mode operation
