@@ -42,9 +42,22 @@ flowchart LR
 | Core | Tarea | Prioridad | Descripción |
 |------|-------|-----------|-------------|
 | **Core 0** | ADC DMA ISR | — (IRAM) | Llena ring buffer con muestras de 2 canales |
+| **Core 0** | `synthtest` (opcional) | 4 | Generador sintético: reemplaza al ADC como productor del ring buffer |
 | **Core 1** | `dsp_task` | Alta (5) | Consume ring buffer, ejecuta pipeline de detección |
 | **Cualquiera** | `main loop` | Normal (1) | Recibe eventos de cola, envía MIDI + LED |
 | **Automático** | TinyUSB | Media | Stack USB manejado por esp_tinyusb |
+
+### 2.3. Modo Test Sintético
+
+Valida el pipeline completo sin hardware: un generador de bursts senoidales
+amortiguados (`edrumulus_synthtest`) inyecta muestras al ring buffer
+bypaseando el ADC. Al activarlo se **detiene el ADC real** para mantener la
+regla de productor único; al desactivarlo se restaura.
+
+- Posición → delay inter-piezo (`Δt = ((pos−63.5)/63.5)·3000 µs`), valida el TDOA con timestamps por muestra
+- Velocity → amplitud (`A = 2·vel/127`)
+- Control por consola: `test hit/auto/stop/mode/status` + `set synth_*`
+- Runbook completo y hallazgos: **[docs/TESTING-SYNTHETIC.md](docs/TESTING-SYNTHETIC.md)**
 
 ---
 
@@ -189,9 +202,23 @@ Se aplica un filtro EMA (α = 0.35) para suavizar la posición entre golpes.
 help                           → Lista de comandos
 show                           → Configuración actual
 set <param> <value>            → Ajustar parámetro
-test <module>                  → Prueba de módulo
+test <module>                  → Prueba de módulo (edge, decay, velocity, adaptive, all)
 save/load [name]               → Persistir/cargar config
 reset                          → Valores de fábrica
+```
+
+### Test sintético (sin hardware)
+
+```
+test hit [vel] [pos]           → Golpe sintético on-demand (def: 100, 64)
+test auto [interval_ms]        → Golpes periódicos (def: 500 ms)
+test stop                      → Detiene el test y restaura el ADC
+test mode [on|off]             → Activa/desactiva el modo sintético
+test status                    → Estado del generador
+set synth_freq <hz>            → Frecuencia del burst (def: 340)
+set synth_decay <ms>           → Decay exponencial (def: 120)
+set synth_rise <ms>            → Ataque (def: 1.0)
+set synth_dur <ms>             → Duración total (def: 250)
 ```
 
 ### Parámetros ajustables
@@ -199,6 +226,7 @@ reset                          → Valores de fábrica
 - `tau_min`, `tau_max`, `r_squared`
 - `linearity`, `min_velocity`
 - `snr_target`, `adaptation_time`
+- `synth_freq`, `synth_decay`, `synth_rise`, `synth_dur`
 - Parámetros TDOA (próximamente)
 
 ---
