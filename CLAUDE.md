@@ -1,5 +1,19 @@
 # CLAUDE.md — ESP32 E-Drum Trigger System
 
+## Agent skills
+
+### Issue tracker
+
+GitHub issues via `gh` CLI on `llescano/esp32-drumpad`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical triage labels (plus existing `enhancement`/`documentation`/`bug`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root. Hardware glossary in `docs/agents/domain.md`.
+
 ## Build Commands
 
 ### Environment Setup (Windows PowerShell)

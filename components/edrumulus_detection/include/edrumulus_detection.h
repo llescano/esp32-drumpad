@@ -776,11 +776,11 @@ typedef struct {
 // Estructuras para eliminar rebotes mecánicos del piezo
 
 // Parámetros de configuración para Phase 3
-#define EDRUMULUS_REBOUND_MIN_RISE_RATE     0.05f   // V/ms - velocidad mínima de subida
-#define EDRUMULUS_REBOUND_MIN_PEAK_DURATION 2       // ms - duración mínima del pico
-#define EDRUMULUS_REBOUND_MIN_VELOCITY      15      // MIDI velocity mínima válida
-#define EDRUMULUS_REBOUND_DECAY_R_SQUARED   0.85f   // Correlación mínima para decaimiento
-#define EDRUMULUS_REBOUND_MAX_VELOCITY_JUMP 0.5f    // 50% máximo salto de velocidad
+#define EDRUMULUS_REBOUND_MIN_RISE_RATE     0.01f   // V/ms - muy sensible para pruebas
+#define EDRUMULUS_REBOUND_MIN_PEAK_DURATION 1       // ms - duración mínima del pico
+#define EDRUMULUS_REBOUND_MIN_VELOCITY      5       // MIDI velocity mínima (bajo para prueba)
+#define EDRUMULUS_REBOUND_DECAY_R_SQUARED   0.50f   // Bajo para no rechazar señales reales
+#define EDRUMULUS_REBOUND_MAX_VELOCITY_JUMP 1.0f    // 100% - sin límite de salto
 #define EDRUMULUS_REBOUND_SIGNAL_BUFFER_SIZE 50     // 50ms de historia a 1kHz
 
 /**
