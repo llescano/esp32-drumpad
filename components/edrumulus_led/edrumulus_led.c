@@ -28,11 +28,10 @@ esp_err_t edrumulus_led_init(const edrumulus_led_config_t *config)
     ESP_LOGI(TAG, "Initializing LED subsystem");
     
     // Configure LED strip
+    // led_strip >=3.x: GRB/WS2812 is the default layout, no explicit format fields
     led_strip_config_t strip_config = {
         .strip_gpio_num = EDRUMULUS_GPIO_LED,
         .max_leds = 1,
-        .led_pixel_format = LED_PIXEL_FORMAT_GRB,
-        .led_model = LED_MODEL_WS2812,
         .flags.invert_out = false,
     };
     

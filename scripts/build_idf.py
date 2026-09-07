@@ -5,14 +5,21 @@ re-injects MSYSTEM at process spawn level, so `unset` from the shell is not
 enough: this wrapper deletes the variable inside the Python process, exports
 the IDF toolchain environment (idf_tools.py export) and then runs idf.py.
 
-Usage (with the IDF python env interpreter):
-    <idf-python> scripts/build_idf.py build
-    <idf-python> scripts/build_idf.py -p COM24 flash monitor
-    <idf-python> scripts/build_idf.py menuconfig
+Project baseline: ESP-IDF 6.0.2 (tools in I:\\Espressif, symlinked as
+C:\\Espressif because the eim installer requires that path).
 
-Environment overrides:
-    IDF_PATH              defaults to I:\\esp32\\v5.5.1\\esp-idf
-    IDF_TOOLS_PATH_BUILD  defaults to C:\\Users\\Luis\\.espressif
+Run with the matching interpreter:
+    C:\\Espressif\\python_env\\idf6.0_py3.11_env\\Scripts\\python.exe scripts/build_idf.py build
+    ... scripts/build_idf.py -p COM24 flash monitor
+
+IDF 5.5.1 fallback (previous install, tools in C:\\Users\\Luis\\.espressif):
+    IDF_PATH_BUILD=I:\\esp32\\v5.5.1\\esp-idf
+    IDF_TOOLS_PATH_BUILD=C:\\Users\\Luis\\.espressif
+    IDF_PYTHON_ENV_PATH=C:\\Users\\Luis\\.espressif\\python_env\\idf5.5_py3.13_env
+    C:\\Users\\Luis\\.espressif\\python_env\\idf5.5_py3.13_env\\Scripts\\python.exe scripts/build_idf.py build
+
+Environment overrides (win over the defaults):
+    IDF_PATH_BUILD, IDF_TOOLS_PATH_BUILD, IDF_PYTHON_ENV_BUILD
 """
 
 import os
@@ -20,17 +27,17 @@ import runpy
 import subprocess
 import sys
 
-DEFAULT_IDF_PATH = r"I:\esp32\v5.5.1\esp-idf"
-# IDF 5.5.1 tools/python env live here (the global IDF_TOOLS_PATH points at
-# the separate IDF 6.x install in I:\Espressif). Flip both when migrating.
-DEFAULT_TOOLS_PATH = r"C:\Users\Luis\.espressif"
+DEFAULT_IDF_PATH = r"I:\esp32\v6.0.2\esp-idf"
+DEFAULT_TOOLS_PATH = r"C:\Espressif"
+DEFAULT_PYTHON_ENV = r"C:\Espressif\python_env\idf6.0_py3.11_env"
 
 os.environ.pop("MSYSTEM", None)  # idf.py refuses MSys/Mingw environments
-os.environ.setdefault("IDF_PATH", DEFAULT_IDF_PATH)
+# The shell profile may export an ambient IDF_PATH (e.g. the old 5.5.1), so
+# this helper always decides the install itself; the *_BUILD vars are the
+# explicit per-invocation overrides.
+os.environ["IDF_PATH"] = os.environ.get("IDF_PATH_BUILD", DEFAULT_IDF_PATH)
 os.environ["IDF_TOOLS_PATH"] = os.environ.get("IDF_TOOLS_PATH_BUILD", DEFAULT_TOOLS_PATH)
-IDF_PYTHON_ENV = os.path.join(os.environ["IDF_TOOLS_PATH"], "python_env",
-                              "idf5.5_py3.13_env")
-os.environ.setdefault("IDF_PYTHON_ENV_PATH", IDF_PYTHON_ENV)
+os.environ["IDF_PYTHON_ENV_PATH"] = os.environ.get("IDF_PYTHON_ENV_BUILD", DEFAULT_PYTHON_ENV)
 
 IDF_TOOLS = os.path.join(os.environ["IDF_PATH"], "tools", "idf_tools.py")
 IDF_PY = os.path.join(os.environ["IDF_PATH"], "tools", "idf.py")

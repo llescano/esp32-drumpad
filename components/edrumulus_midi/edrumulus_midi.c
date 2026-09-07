@@ -46,7 +46,7 @@ esp_err_t edrumulus_midi_init(const edrumulus_midi_config_t *config)
     g_midi_config = *config;
 
     // Verificar soporte USB OTG
-    ESP_LOGI(TAG, "USB OTG Supported: %s", CONFIG_USB_OTG_SUPPORTED ? "YES" : "NO");
+    ESP_LOGI(TAG, "USB OTG Supported: %s", CONFIG_SOC_USB_OTG_SUPPORTED ? "YES" : "NO");
     ESP_LOGI(TAG, "TinyUSB MIDI Count: %d", CONFIG_TINYUSB_MIDI_COUNT);
 #ifdef CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
     ESP_LOGI(TAG, "USB Serial JTAG: ENABLED");
