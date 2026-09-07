@@ -1,0 +1,14 @@
+menu "Edrumulus Synthetic Test"
+
+    config EDRUMULUS_SYNTHTEST_AUTOSTART
+        bool "Enable synthetic test mode automatically at boot"
+        default n
+        help
+            Starts the synthetic piezo signal generator at boot (issue #19).
+            While enabled, the ADC continuous conversion is stopped and the
+            detection pipeline is fed with synthetic damped sine bursts.
+            Useful to validate the full DSP->MIDI pipeline without hardware.
+            Console commands (test hit / test auto / test stop) are the
+            preferred runtime control once available.
+
+endmenu

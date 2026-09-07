@@ -19,6 +19,7 @@
 #include "edrumulus_detection.h"
 #include "edrumulus_led.h"
 #include "edrumulus_console.h"
+#include "edrumulus_synthtest.h"
 #include "usb_descriptors.h"
 
 // Phase 3 Validation Test Functions
@@ -227,6 +228,23 @@ void app_main(void)
         ESP_LOGI(TAG, "Pad 0 configured: piezo1=GPIO4, piezo2=GPIO5, note=%d",
                  pad0.midi_note);
     }
+
+    // Synthetic test subsystem (issue #19): injects fake piezo waveforms
+    // into the ring buffer, bypassing the ADC
+    ESP_LOGI(TAG, "Initializing synthetic test subsystem...");
+    ret = edrumulus_synthtest_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize synthetic test subsystem: %s", esp_err_to_name(ret));
+    }
+#if CONFIG_EDRUMULUS_SYNTHTEST_AUTOSTART
+    ESP_LOGI(TAG, "Synthetic test AUTOSTART enabled: switching to synthetic mode");
+    ret = edrumulus_synthtest_mode_enable();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable synthetic mode: %s", esp_err_to_name(ret));
+    } else {
+        edrumulus_synthtest_auto_start(500);
+    }
+#endif
 
     // Start core system
     ESP_LOGI(TAG, "Starting core system...");

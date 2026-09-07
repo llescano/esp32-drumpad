@@ -378,6 +378,29 @@ uint32_t edrumulus_detection_get_overflow_count(void)
     return g_adc_ringbuf.overflow_count;
 }
 
+// === SYNTHETIC TEST INJECTION (issue #19) ===
+
+esp_err_t edrumulus_detection_inject_sample(const edrumulus_adc_sample_t *sample)
+{
+    if (!sample) return ESP_ERR_INVALID_ARG;
+    if (sample->channel >= EDRUMULUS_MAX_ADC_CHANNELS) return ESP_ERR_INVALID_ARG;
+    if (!g_adc_ringbuf.initialized) return ESP_ERR_INVALID_STATE;
+
+    ringbuf_push(&g_adc_ringbuf, sample);
+    return ESP_OK;
+}
+
+void edrumulus_detection_ringbuf_reset(void)
+{
+    ringbuf_reset(&g_adc_ringbuf);
+}
+
+bool edrumulus_detection_adc_is_running(void)
+{
+    return g_adc_continuous_running;
+}
+
+
 // === LEGACY ONE-SHOT READ (конвертирует из ring buffer) ===
 
 esp_err_t edrumulus_detection_read_channel(uint8_t channel, int *value)
