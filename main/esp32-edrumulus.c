@@ -32,7 +32,7 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP32 E-Drum Trigger System Starting...");
     ESP_LOGI(TAG, "Target: ESP32-S3 with USB MIDI support");
     ESP_LOGI(TAG, "TinyUSB MIDI Count: %d", CONFIG_TINYUSB_MIDI_COUNT);
-    ESP_LOGI(TAG, "USB OTG Supported: %s", CONFIG_USB_OTG_SUPPORTED ? "YES" : "NO");
+    ESP_LOGI(TAG, "USB OTG Supported: %s", CONFIG_SOC_USB_OTG_SUPPORTED ? "YES" : "NO");
     
     // ESP32-S3 USB Pin Information
     ESP_LOGI(TAG, "=== ESP32-S3 USB Configuration ===");

@@ -727,7 +727,7 @@ void edrumulus_console_process_command(const char* input) {
         printf("Guardando configuración '%s' en NVS...\n", config_name);
         
         // Actualizar nombre en la configuración
-        strncpy(g_console_config.config_name, config_name, sizeof(g_console_config.config_name) - 1);
+        snprintf(g_console_config.config_name, sizeof(g_console_config.config_name), "%s", config_name);
         
         // Guardar usando la función existente
         esp_err_t ret = edrumulus_console_save_config(config_name);

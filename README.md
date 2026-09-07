@@ -30,8 +30,8 @@ A high-performance electronic drum trigger system based on **ESP32-S3** with nat
 ## Quick Start
 
 ### Prerequisites
-- ESP-IDF v5.5.1 or later
-- ESP32-S3 DevKit (e.g., ESP32-S3-DevKitC-1)
+- ESP-IDF v6.0.2 (baseline; v5.5.1 still builds via fallback, see below)
+- ESP32-S3 board (tested: Waveshare ESP32-S3 Zero, DevKitC-1)
 
 ### Build & Flash
 ```bash
@@ -42,12 +42,16 @@ idf.py flash monitor
 ```
 
 **Git Bash wrapper (Windows):** `scripts/build_idf.py` runs idf.py from Git
-Bash (it scrubs the unsupported `MSYSTEM` env var and exports the IDF 5.5.1
-toolchain environment):
+Bash (it scrubs the unsupported `MSYSTEM` env var, exports the toolchain
+environment and defaults to IDF 6.0.2 @ `C:\Espressif`):
 ```bash
-/c/Users/Luis/.espressif/python_env/idf5.5_py3.13_env/Scripts/python.exe scripts/build_idf.py build
-/c/Users/Luis/.espressif/python_env/idf5.5_py3.13_env/Scripts/python.exe scripts/build_idf.py -p COM24 flash monitor
+/c/Espressif/python_env/idf6.0_py3.11_env/Scripts/python.exe scripts/build_idf.py build
+/c/Espressif/python_env/idf6.0_py3.11_env/Scripts/python.exe scripts/build_idf.py -p COM24 flash monitor
 ```
+IDF 5.5.1 fallback: pass `IDF_PATH_BUILD=I:\esp32\v5.5.1\esp-idf
+IDF_TOOLS_PATH_BUILD=C:\Users\Luis\.espressif
+IDF_PYTHON_ENV_BUILD=C:\Users\Luis\.espressif\python_env\idf5.5_py3.13_env`
+and run with the 5.5.1 interpreter (details in the script header).
 
 **PowerShell scripts (Windows):**
 ```powershell
